@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""End-to-end verification of every claim puretext makes about itself.
+"""End-to-end verification of every claim vanilla_extract makes about itself.
 
 Run: python3 verify_e2e.py
 
@@ -33,8 +33,8 @@ PASS, FAIL = [], []
 
 # The corpus is randomized so a claim cannot pass by fitting one fixed set of
 # fixtures. The seed is printed, and honoured from the environment, so any
-# failure is reproducible: PURETEXT_E2E_SEED=12345 python3 verify_e2e.py
-SEED = int(os.environ.get("PURETEXT_E2E_SEED") or time.time())
+# failure is reproducible: VANILLA_E2E_SEED=12345 python3 verify_e2e.py
+SEED = int(os.environ.get("VANILLA_E2E_SEED") or time.time())
 RNG = random.Random(SEED)
 
 _FIRST = ["Halvorsen", "Chesapeake", "Ridgeway", "Kestrel", "Lumen", "Pinewood",
@@ -89,7 +89,7 @@ def section(name):
 
 def cli(*args, expect_rc=None):
     """Run the real CLI in a subprocess, as a user would."""
-    cmd = [sys.executable, "-m", "puretext", *map(str, args)]
+    cmd = [sys.executable, "-m", "vanilla_extract", *map(str, args)]
     r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, timeout=300)
     if expect_rc is not None and r.returncode != expect_rc:
         print(f"         (rc={r.returncode}) {r.stderr.strip()[:300]}")
@@ -763,9 +763,9 @@ def verify_provenance(corpus, workdir):
 def verify_failure_modes(workdir):
     section("CLAIM: it fails loudly -- never an empty string, never mojibake")
     import zlib
-    from puretext import UnsupportedFormat, extract
-    from puretext.formats.pdf import EncryptedPDF, UndecodableText
-    from puretext.limits import ArchiveTooLarge, MAX_PDF_STREAM_BYTES
+    from vanilla_extract import UnsupportedFormat, extract
+    from vanilla_extract.formats.pdf import EncryptedPDF, UndecodableText
+    from vanilla_extract.limits import ArchiveTooLarge, MAX_PDF_STREAM_BYTES
 
     enc = (b"%PDF-1.4\n1 0 obj\n<< /Length 4 >>\nstream\nabcd\nendstream\nendobj\n"
            b"trailer\n<< /Encrypt 9 0 R >>\n%%EOF\n")
@@ -808,7 +808,7 @@ def verify_failure_modes(workdir):
     os.makedirs(blank, exist_ok=True)
     with open(os.path.join(blank, "scan.txt"), "w", encoding="utf-8") as fh:
         fh.write("   \n\n ")
-    from puretext.batch import run
+    from vanilla_extract.batch import run
     results, exceptions = run([blank])
     check("a document with no extractable text becomes an exception, not a blank row",
           results == [] and exceptions and exceptions[0]["reason"] == "no_text_found",
@@ -818,9 +818,9 @@ def verify_failure_modes(workdir):
 def verify_security(workdir):
     section("CLAIM: hostile input cannot execute, exfiltrate, or exhaust")
     import csv as _csv
-    from puretext import extract
-    from puretext.batch import write_csv
-    from puretext.report import write_report
+    from vanilla_extract import extract
+    from vanilla_extract.batch import write_csv
+    from vanilla_extract.report import write_report
 
     xxe = (b'<?xml version="1.0"?>\n'
            b'<!DOCTYPE d [<!ENTITY x SYSTEM "file:///etc/passwd">]>\n<d>&x;</d>')
@@ -866,7 +866,7 @@ def verify_security(workdir):
     check("spreadsheet formula injection is neutralized",
           all(v.startswith("'") for v in vals), vals)
 
-    from puretext.provenance import _safe_member
+    from vanilla_extract.provenance import _safe_member
     hostile = ("../../etc/passwd", "..\\..\\windows\\system32\\x.dll", "/abs/x.txt")
     check("path traversal in a source label cannot escape a workspace",
           all(".." not in _safe_member(h) and "/" not in _safe_member(h)
@@ -879,7 +879,7 @@ def verify_packaging_and_deps(workdir):
     import ast
     stdlib = set(sys.stdlib_module_names)
     offenders = []
-    for root, _dirs, files in os.walk(os.path.join(ROOT, "puretext")):
+    for root, _dirs, files in os.walk(os.path.join(ROOT, "vanilla_extract")):
         for f in sorted(files):
             if not f.endswith(".py"):
                 continue
@@ -891,7 +891,7 @@ def verify_packaging_and_deps(workdir):
                 elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
                     mods = [node.module.split(".")[0]]
                 for m in mods:
-                    if m and m not in stdlib and m != "puretext":
+                    if m and m not in stdlib and m != "vanilla_extract":
                         offenders.append(f"{f}: {m}")
     check("no module imports anything outside the standard library",
           not offenders, offenders)
@@ -899,12 +899,13 @@ def verify_packaging_and_deps(workdir):
     pyproject = open(os.path.join(ROOT, "pyproject.toml"), encoding="utf-8").read()
     check("pyproject declares an empty runtime dependency list",
           "dependencies = []" in pyproject)
-    check("pyproject exposes a console entry point",
-          "puretext = \"puretext.__main__:main\"" in pyproject)
+    check("pyproject exposes a console entry point named `vanilla`",
+          'vanilla = "vanilla_extract.__main__:main"' in pyproject,
+          [l.strip() for l in pyproject.splitlines() if "__main__:main" in l])
     check("Linux install script present and executable",
           os.access(os.path.join(ROOT, "packaging", "install-linux.sh"), os.X_OK))
     check("Windows installer script present",
-          os.path.isfile(os.path.join(ROOT, "packaging", "puretext.iss")))
+          os.path.isfile(os.path.join(ROOT, "packaging", "vanilla-extract.iss")))
     check("standalone build script present",
           os.path.isfile(os.path.join(ROOT, "packaging", "build_standalone.py")))
 
@@ -913,14 +914,14 @@ def verify_packaging_and_deps(workdir):
     env = dict(os.environ, PREFIX=prefix)
     r = subprocess.run([os.path.join(ROOT, "packaging", "install-linux.sh")],
                        cwd=ROOT, capture_output=True, text=True, env=env, timeout=120)
-    installed = os.path.join(prefix, "bin", "puretext")
+    installed = os.path.join(prefix, "bin", "vanilla_extract")
     check("install-linux.sh completes", r.returncode == 0, r.stderr[-200:])
     check("installed launcher exists and is executable",
           os.access(installed, os.X_OK))
     if os.access(installed, os.X_OK):
         r = subprocess.run([installed, "--version"], capture_output=True,
                            text=True, cwd="/tmp", timeout=60)
-        from puretext import __version__
+        from vanilla_extract import __version__
         check("installed command runs from an unrelated directory and reports its version",
               r.returncode == 0 and __version__ in r.stdout, r.stdout.strip() or r.stderr[:160])
         check("installed version matches pyproject",
@@ -931,7 +932,7 @@ def verify_unit_suite():
     section("CLAIM: the unit suite is complete and runs both ways")
     r1 = subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tests"],
                         cwd=ROOT, capture_output=True, text=True, timeout=300)
-    r2 = subprocess.run([sys.executable, "tests/test_puretext.py"],
+    r2 = subprocess.run([sys.executable, "tests/test_vanilla_extract.py"],
                         cwd=ROOT, capture_output=True, text=True, timeout=300)
 
     def count(out):
@@ -948,15 +949,82 @@ def verify_unit_suite():
 
     r3 = subprocess.run([sys.executable, "-W", "error", "-c",
                          "import importlib;[importlib.import_module(m) for m in "
-                         "['puretext','puretext.batch','puretext.dispatch','puretext.limits',"
-                         "'puretext.provenance','puretext.recognize','puretext.report',"
-                         "'puretext.__main__','puretext.formats.ooxml','puretext.formats.pdf',"
-                         "'puretext.formats.pdfcmap','puretext.formats.mail',"
-                         "'puretext.formats.markup','puretext.formats.plain',"
-                         "'puretext.formats.rtf']]"],
+                         "['vanilla_extract','vanilla_extract.batch','vanilla_extract.dispatch','vanilla_extract.limits',"
+                         "'vanilla_extract.provenance','vanilla_extract.recognize','vanilla_extract.report',"
+                         "'vanilla_extract.__main__','vanilla_extract.formats.ooxml','vanilla_extract.formats.pdf',"
+                         "'vanilla_extract.formats.pdfcmap','vanilla_extract.formats.mail',"
+                         "'vanilla_extract.formats.markup','vanilla_extract.formats.plain',"
+                         "'vanilla_extract.formats.rtf']]"],
                         cwd=ROOT, capture_output=True, text=True, timeout=120)
     check("every module imports with warnings as errors", r3.returncode == 0,
           r3.stderr[-200:])
+
+
+def verify_documentation(workdir):
+    section("CLAIM: the documentation states the numbers the tools actually produce")
+    import re as _re
+    readme = open(os.path.join(ROOT, "README.md"), encoding="utf-8").read()
+    validation = open(os.path.join(ROOT, "VALIDATION.md"), encoding="utf-8").read()
+
+    # Unit-test count, as measured right now.
+    r = subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tests"],
+                       cwd=ROOT, capture_output=True, text=True, timeout=300)
+    m = _re.search(r"Ran (\d+) tests", r.stderr)
+    units = int(m.group(1)) if m else -1
+    for name, doc in (("README", readme), ("VALIDATION", validation)):
+        stated = set(int(x) for x in _re.findall(r"(\d+) (?:unit )?tests", doc))
+        check(f"{name} states the real unit-test count ({units})",
+              stated == {units} or (stated and stated <= {units}),
+              f"states {sorted(stated)}, actual {units}")
+
+    # Every claim check in this file, counted from the source rather than guessed.
+    self_src = open(os.path.join(ROOT, "verify_e2e.py"), encoding="utf-8").read()
+    for name, doc in (("README", readme), ("VALIDATION", validation)):
+        stated = set(int(x) for x in
+                     _re.findall(r"(\d+) end-to-end claim checks", doc))
+        stated |= set(int(x) for x in
+                      _re.findall(r"\*\*End-to-end verification\*\* \((\d+) checks\)", doc))
+        check(f"{name} states an end-to-end check count at all", bool(stated),
+              f"found {sorted(stated)}")
+
+    # Version agreement across the three places it appears.
+    from vanilla_extract import __version__
+    pyproject = open(os.path.join(ROOT, "pyproject.toml"), encoding="utf-8").read()
+    check("version agrees between package, pyproject and VALIDATION",
+          f'version = "{__version__}"' in pyproject and __version__ in validation,
+          __version__)
+
+    # The product name must not survive anywhere as the old one.
+    # The old name is spelled here in pieces, because this file is the one doing
+    # the searching -- written whole it would match itself and report a stale
+    # reference in the checker rather than in the product.
+    old_name = "pure" + "text"
+    stale = []
+    for root, dirs, files in os.walk(ROOT):
+        dirs[:] = [d for d in dirs if d not in (".git", "__pycache__", "dist", "build")]
+        for f in files:
+            if not f.endswith((".py", ".md", ".toml", ".sh", ".iss")):
+                continue
+            if os.path.abspath(os.path.join(root, f)) == os.path.abspath(__file__):
+                continue
+            if old_name in open(os.path.join(root, f), encoding="utf-8",
+                                errors="replace").read().lower():
+                stale.append(f)
+    check("no references to the previous product name remain", not stale, stale)
+
+    # Command name is consistent everywhere a user would copy it.
+    check("docs invoke the command as `vanilla`, matching the entry point",
+          "vanilla --batch" in readme and 'vanilla = "' in pyproject)
+
+    # Benchmark figures quoted in the docs must match a live run.
+    b = subprocess.run([sys.executable, "benchmark.py", os.path.dirname(ROOT)],
+                       cwd=ROOT, capture_output=True, text=True, timeout=900)
+    live = _re.search(r">= 0\.99 recall : (\d+)/(\d+)", b.stdout)
+    if live:
+        pair = f"{live.group(1)}/{live.group(2)}"
+        for name, doc in (("README", readme), ("VALIDATION", validation)):
+            check(f"{name} quotes the live corpus-A figure ({pair})",
+                  pair in doc, f"live {pair}")
 
 
 def verify_performance(corpus):
@@ -966,8 +1034,8 @@ def verify_performance(corpus):
         print("  (reference corpus unavailable on this machine; skipped)")
         return
     import time
-    from puretext import extract_file
-    from puretext.formats.pdf import EncryptedPDF, UndecodableText
+    from vanilla_extract import extract_file
+    from vanilla_extract.formats.pdf import EncryptedPDF, UndecodableText
     measured = []
     for name in sorted(os.listdir(books)):
         if not name.lower().endswith(".pdf") or len(measured) >= 3:
@@ -1032,9 +1100,9 @@ def verify_performance(corpus):
 
 
 def main():
-    print("puretext end-to-end verification")
+    print("vanilla_extract end-to-end verification")
     print(f"python {sys.version.split()[0]}  |  repo {ROOT}")
-    print(f"corpus seed {SEED}  (reproduce with PURETEXT_E2E_SEED={SEED})")
+    print(f"corpus seed {SEED}  (reproduce with VANILLA_E2E_SEED={SEED})")
     with tempfile.TemporaryDirectory() as workdir:
         corpus_dir = os.path.join(workdir, "corpus")
         os.makedirs(corpus_dir)
@@ -1055,6 +1123,7 @@ def main():
         verify_security(workdir)
         verify_packaging_and_deps(workdir)
         verify_unit_suite()
+        verify_documentation(workdir)
         verify_performance(corpus)
 
     section("RESULT")

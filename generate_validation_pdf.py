@@ -48,7 +48,7 @@ class Report(FPDF):
         self.set_y(8)
         self.set_font("Helvetica", "", 7.5)
         self.set_text_color(*MUTED)
-        self.cell(0, 4, "puretext 0.2.0 -- Usage, Methods and Validation Results",
+        self.cell(0, 4, "vanilla-extract 0.2.0 -- Usage, Methods and Validation Results",
                   align="L")
         self.set_y(8)
         self.cell(0, 4, f"page {self.page_no()}", align="R", new_x="LMARGIN",
@@ -255,7 +255,7 @@ def parse_and_render(pdf, md):
 
 def main():
     out = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
-        ROOT, "puretext_Validation_Report.pdf")
+        ROOT, "vanilla_extract_Validation_Report.pdf")
     md = open(SRC, encoding="utf-8").read()
 
     pdf = Report(format="letter", unit="mm")
@@ -265,7 +265,7 @@ def main():
 
     pdf.set_font("Helvetica", "B", 21)
     pdf.set_text_color(*INK)
-    pdf.cell(0, 9, "puretext", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 9, "vanilla_extract", new_x="LMARGIN", new_y="NEXT")
     pdf.set_font("Helvetica", "", 11.5)
     pdf.set_text_color(*ACCENT)
     pdf.cell(0, 6, "Usage, Methods and Validation Results",
@@ -273,7 +273,7 @@ def main():
     pdf.set_font("Helvetica", "", 8.6)
     pdf.set_text_color(*MUTED)
     pdf.cell(0, 5, "Version 0.2.0  |  verification run 2026-09-16  |  MIT licensed  |  "
-                   "github.com/brandonsbutler-ai/puretext",
+                   "github.com/brandonsbutler-ai/vanilla-extract",
              new_x="LMARGIN", new_y="NEXT")
     pdf.ln(1)
     pdf.set_draw_color(*INK)

@@ -1,19 +1,19 @@
-; Inno Setup script -- Windows installer for puretext.
+; Inno Setup script -- Windows installer for vanilla_extract.
 ;
 ; Build order:
-;     python packaging\build_standalone.py      -> dist\puretext.exe
-;     iscc packaging\puretext.iss               -> Output\puretext-setup-x.y.z.exe
+;     python packaging\build_standalone.py      -> dist\vanilla.exe
+;     iscc packaging\vanilla-extract.iss               -> Output\vanilla_extract-setup-x.y.z.exe
 ;
-; Installs the single executable and puts it on PATH, so `puretext` works from
+; Installs the single executable and puts it on PATH, so `vanilla` works from
 ; any Command Prompt or PowerShell window. Per-user install by default: it needs
 ; no administrator rights, which is what makes it usable on a locked-down
 ; corporate machine -- the same audience that cannot pip install anything.
 
-#define AppName "puretext"
+#define AppName "vanilla_extract"
 #define AppVersion "0.2.0"
 #define AppPublisher "Brandon S. Butler"
-#define AppURL "https://github.com/brandonsbutler-ai/puretext"
-#define AppExeName "puretext.exe"
+#define AppURL "https://github.com/brandonsbutler-ai/vanilla-extract"
+#define AppExeName "vanilla.exe"
 
 [Setup]
 AppId={{7B3C1E52-9A4D-4C7E-9B2F-6E1D0A5F8C34}
@@ -27,7 +27,7 @@ DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 LicenseFile=..\LICENSE
 OutputDir=..\Output
-OutputBaseFilename=puretext-setup-{#AppVersion}
+OutputBaseFilename=vanilla_extract-setup-{#AppVersion}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
@@ -40,7 +40,7 @@ UninstallDisplayIcon={app}\{#AppExeName}
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
-Name: "addtopath"; Description: "Add puretext to PATH (recommended)"; \
+Name: "addtopath"; Description: "Add vanilla_extract to PATH (recommended)"; \
     GroupDescription: "Command line"; Flags: checkedonce
 
 [Files]

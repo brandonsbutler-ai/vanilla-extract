@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Measure puretext's PDF output against poppler's pdftotext.
+"""Measure vanilla_extract's PDF output against poppler's pdftotext.
 
 Why this exists: "it extracts text" is not a claim anyone should take on
 faith. This scores every PDF in a directory by token overlap against
@@ -7,7 +7,7 @@ pdftotext -- a mature C++ implementation with full font handling -- and prints
 the distribution. The README quotes these numbers and nothing else.
 
 pdftotext is the reference, not the target: it is allowed to win. The point is
-to know BY HOW MUCH, and to find the files where puretext returns nothing.
+to know BY HOW MUCH, and to find the files where vanilla_extract returns nothing.
 
     python3 benchmark.py /path/to/pdfs
 """
@@ -18,8 +18,8 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from puretext import extract_file            # noqa: E402
-from puretext.formats.pdf import EncryptedPDF, UndecodableText  # noqa: E402
+from vanilla_extract import extract_file            # noqa: E402
+from vanilla_extract.formats.pdf import EncryptedPDF, UndecodableText  # noqa: E402
 
 _WORD = re.compile(r"[A-Za-z0-9]+")
 

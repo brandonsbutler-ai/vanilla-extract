@@ -1,4 +1,4 @@
-r"""Tests for puretext.
+r"""Tests for vanilla_extract.
 
 Run: python3 -m unittest discover -s tests -v      (no pytest needed)
 
@@ -16,10 +16,10 @@ import zlib
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from puretext import UnsupportedFormat, extract, extract_archive  # noqa: E402
-from puretext.formats import pdf, rtf                             # noqa: E402
-from puretext.formats.markup import strip_html                    # noqa: E402
-from puretext.formats.plain import decode_text                    # noqa: E402
+from vanilla_extract import UnsupportedFormat, extract, extract_archive  # noqa: E402
+from vanilla_extract.formats import pdf, rtf                             # noqa: E402
+from vanilla_extract.formats.markup import strip_html                    # noqa: E402
+from vanilla_extract.formats.plain import decode_text                    # noqa: E402
 
 
 def make_docx(paragraphs):
@@ -220,7 +220,7 @@ class TestBatch(unittest.TestCase):
 
     def test_results_and_exceptions_are_separate(self):
         import tempfile
-        from puretext.batch import run
+        from vanilla_extract.batch import run
         with tempfile.TemporaryDirectory() as d:
             self._corpus(d)
             results, exceptions = run([d])
@@ -233,7 +233,7 @@ class TestBatch(unittest.TestCase):
     def test_unreadable_file_never_aborts_the_batch(self):
         """One bad document must not cost the caller the other 399."""
         import tempfile
-        from puretext.batch import run
+        from vanilla_extract.batch import run
         with tempfile.TemporaryDirectory() as d:
             self._corpus(d)
             with open(os.path.join(d, "e.bin"), "wb") as fh:
@@ -246,7 +246,7 @@ class TestBatch(unittest.TestCase):
     def test_empty_document_is_an_exception_not_a_blank_row(self):
         """A scan with no text layer must be named, not returned as empty."""
         import tempfile
-        from puretext.batch import run
+        from vanilla_extract.batch import run
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, "blank.txt"), "w", encoding="utf-8") as fh:
                 fh.write("   \n\n  ")
@@ -256,7 +256,7 @@ class TestBatch(unittest.TestCase):
 
     def test_field_extraction_uses_first_capture_group(self):
         import tempfile
-        from puretext.batch import Field, run
+        from vanilla_extract.batch import Field, run
         with tempfile.TemporaryDirectory() as d:
             self._corpus(d)
             fields = [Field.parse(r"invoice=Invoice\s*#([A-Z0-9-]+)"),
@@ -270,7 +270,7 @@ class TestBatch(unittest.TestCase):
     def test_missing_field_is_empty_not_absent(self):
         """A column must exist for every field on every row, or the CSV is ragged."""
         import tempfile
-        from puretext.batch import Field, run
+        from vanilla_extract.batch import Field, run
         with tempfile.TemporaryDirectory() as d:
             self._corpus(d)
             results, _ = run([d], fields=[Field.parse("nope=ZZZNOMATCHZZZ")])
@@ -278,13 +278,13 @@ class TestBatch(unittest.TestCase):
         self.assertTrue(all(r["nope"] == "" for r in results))
 
     def test_bad_field_spec_is_rejected(self):
-        from puretext.batch import Field
+        from vanilla_extract.batch import Field
         with self.assertRaises(ValueError):
             Field.parse("no-equals-sign")
 
     def test_write_csv_emits_header_even_when_empty(self):
         import tempfile
-        from puretext.batch import write_csv
+        from vanilla_extract.batch import write_csv
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "out.csv")
             written = write_csv([], path, ["file", "reason", "detail"])
@@ -302,31 +302,31 @@ class TestRecognize(unittest.TestCase):
            "Contact: ap@northwind.example\n")
 
     def test_colon_form(self):
-        from puretext.recognize import label_values
+        from vanilla_extract.recognize import label_values
         self.assertEqual(label_values(self.DOC)["invoice number"], "INV-1001")
 
     def test_column_form(self):
         """Two-or-more spaces is the other way a flattened PDF renders a form."""
-        from puretext.recognize import label_values
+        from vanilla_extract.recognize import label_values
         self.assertEqual(label_values(self.DOC)["terms"], "Net 30")
 
     def test_label_on_its_own_line(self):
-        from puretext.recognize import label_values
+        from vanilla_extract.recognize import label_values
         pairs = label_values("Ship To\n42 Rue Morgue\n")
         self.assertEqual(pairs.get("ship to"), "42 Rue Morgue")
 
     def test_first_occurrence_wins(self):
         """A footer repeat must not overwrite the form's own statement."""
-        from puretext.recognize import label_values
+        from vanilla_extract.recognize import label_values
         pairs = label_values("Total: $10.00\nsome body text\nTotal: $99.99\n")
         self.assertEqual(pairs["total"], "$10.00")
 
     def test_labels_are_normalized(self):
-        from puretext.recognize import normalize_label
+        from vanilla_extract.recognize import normalize_label
         self.assertEqual(normalize_label("  Invoice   Number :"), "invoice number")
 
     def test_classify_types(self):
-        from puretext.recognize import classify
+        from vanilla_extract.recognize import classify
         self.assertEqual(classify("$1,299.00"), "money")
         self.assertEqual(classify("2026-03-14"), "date_iso")
         self.assertEqual(classify("ap@northwind.example"), "email")
@@ -334,7 +334,7 @@ class TestRecognize(unittest.TestCase):
         self.assertEqual(classify("Net 30"), "text")
 
     def test_infer_schema_ranks_by_support(self):
-        from puretext.recognize import infer_schema
+        from vanilla_extract.recognize import infer_schema
         common = "Invoice Number: A-1\nTotal: $5.00\n"
         rare = "Invoice Number: A-2\nTotal: $6.00\nRush Fee: $2.00\n"
         schema = infer_schema([common, common, common, rare])
@@ -345,7 +345,7 @@ class TestRecognize(unittest.TestCase):
         self.assertNotIn("rush fee", labels)
 
     def test_infer_schema_honours_min_support(self):
-        from puretext.recognize import infer_schema
+        from vanilla_extract.recognize import infer_schema
         # Two form types mixed in one folder, each label in half the corpus.
         docs = ["Order Number: 1\n", "Order Number: 2\n",
                 "Claim Number: 3\n", "Claim Number: 4\n"]
@@ -354,17 +354,17 @@ class TestRecognize(unittest.TestCase):
 
     def test_single_character_labels_are_rejected_as_noise(self):
         """`A: 1` is a list marker or an artefact far more often than a field."""
-        from puretext.recognize import infer_schema
+        from vanilla_extract.recognize import infer_schema
         self.assertEqual(infer_schema(["A: 1\n", "A: 2\n"], min_support=0.5), [])
 
     def test_extract_fields_fills_missing_with_blank(self):
-        from puretext.recognize import extract_fields
+        from vanilla_extract.recognize import extract_fields
         got = extract_fields(self.DOC, ["invoice number", "purchase order"])
         self.assertEqual(got["invoice number"], "INV-1001")
         self.assertEqual(got["purchase order"], "")
 
     def test_empty_corpus(self):
-        from puretext.recognize import infer_schema
+        from vanilla_extract.recognize import infer_schema
         self.assertEqual(infer_schema([]), [])
 
 
@@ -374,7 +374,7 @@ class TestReport(unittest.TestCase):
 
     def _render(self, **kw):
         import tempfile
-        from puretext.report import write_report
+        from vanilla_extract.report import write_report
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "r.html")
             write_report(self.ROWS, self.EXCS, path, **kw)
@@ -395,7 +395,7 @@ class TestReport(unittest.TestCase):
     def test_values_are_escaped(self):
         """A document containing markup must not be able to inject it."""
         import tempfile
-        from puretext.report import write_report
+        from vanilla_extract.report import write_report
         rows = [{"file": "x.pdf", "characters": 1,
                  "total": "<script>alert(1)</script>", "text": "t"}]
         with tempfile.TemporaryDirectory() as d:
@@ -415,7 +415,7 @@ class TestProvenance(unittest.TestCase):
     """Originals kept, corrections appended, and both provable afterwards."""
 
     def _ws(self, d):
-        from puretext.provenance import Workspace
+        from vanilla_extract.provenance import Workspace
         ws = Workspace(os.path.join(d, "case"))
         ws.create("0.2.0", [d])
         return ws
@@ -475,14 +475,14 @@ class TestProvenance(unittest.TestCase):
             self.assertTrue(any("changed since capture" in p for p in problems))
 
     def test_archive_names_are_readable_and_collision_proof(self):
-        from puretext.provenance import _safe_member
+        from vanilla_extract.provenance import _safe_member
         a = _safe_member("/clients/acme/invoice.pdf")
         b = _safe_member("/clients/beta/invoice.pdf")
         self.assertTrue(a.startswith("invoice_") and a.endswith(".pdf"))
         self.assertNotEqual(a, b)
 
     def test_traversal_is_neutralized(self):
-        from puretext.provenance import _safe_member
+        from vanilla_extract.provenance import _safe_member
         for hostile in ("../../etc/passwd", "..\\..\\windows\\system32\\x.dll",
                         "/absolute/path/x.txt"):
             member = _safe_member(hostile)
@@ -513,7 +513,7 @@ class TestHostileInput(unittest.TestCase):
         return buf.getvalue()
 
     def test_decompression_bomb_is_refused_before_allocating(self):
-        from puretext.limits import ArchiveTooLarge
+        from vanilla_extract.limits import ArchiveTooLarge
         bomb = self._zip("word/document.xml", b"A" * (200 * 1024 * 1024))
         with self.assertRaises(ArchiveTooLarge):
             extract(bomb, "bomb.docx")
@@ -530,7 +530,7 @@ class TestHostileInput(unittest.TestCase):
 
     def test_archive_budget_stops_many_medium_members(self):
         """Members that are individually fine must not add up without limit."""
-        from puretext.limits import ArchiveTooLarge, Budget, check_member
+        from vanilla_extract.limits import ArchiveTooLarge, Budget, check_member
 
         class FakeInfo:
             filename = "x"
@@ -571,7 +571,7 @@ class TestHostileInput(unittest.TestCase):
 
     def test_no_catastrophic_backtracking_in_recognizers(self):
         import time
-        from puretext.recognize import DETECTORS, label_values
+        from vanilla_extract.recognize import DETECTORS, label_values
         hostile = [("A" * 5000) + ": v", "L" + (" " * 20000) + "v",
                    "$" + ("1," * 4000) + "00", ("AB-" * 4000) + "1"]
         start = time.time()
@@ -587,12 +587,12 @@ class TestReviewRegressions(unittest.TestCase):
 
     def test_rtf_generator_group_does_not_swallow_the_document(self):
         r"""#1 -- `{\*\generator}` double-pushed the drop stack. Word emits it always."""
-        from puretext.formats import rtf
+        from vanilla_extract.formats import rtf
         doc = rb"{\rtf1\ansi{\*\generator Riched20 10.0.19041;}\pard Body text here\par}"
         self.assertEqual(rtf.extract_rtf(doc), "Body text here")
 
     def test_rtf_starred_listtable_does_not_swallow_the_document(self):
-        from puretext.formats import rtf
+        from vanilla_extract.formats import rtf
         self.assertEqual(rtf.extract_rtf(rb"{\rtf1{\*\listtable{\list x}}Body}"), "Body")
 
     def test_html_meta_does_not_latch_the_skip_counter(self):
@@ -607,7 +607,7 @@ class TestReviewRegressions(unittest.TestCase):
     def test_report_json_cannot_break_out_of_the_script_block(self):
         """#3 -- `</script>` in a document's text was an XSS into the client's browser."""
         import tempfile
-        from puretext.report import write_report
+        from vanilla_extract.report import write_report
         payload = "</script><img src=x onerror=alert(1)>"
         rows = [{"file": "evil.pdf", "characters": 1, "v": payload, "text": payload}]
         with tempfile.TemporaryDirectory() as d:
@@ -620,7 +620,7 @@ class TestReviewRegressions(unittest.TestCase):
     def test_pdf_object_index_is_not_quadratic(self):
         """#4 -- objects with no `endobj` sliced to end-of-file, n^2 in time and memory."""
         import time
-        from puretext.formats import pdfcmap
+        from vanilla_extract.formats import pdfcmap
         crafted = b"%PDF-1.4\n" + b"".join(
             f"{i} 0 obj\n<</X 1>>\n".encode() for i in range(20000))
         start = time.time()
@@ -630,8 +630,8 @@ class TestReviewRegressions(unittest.TestCase):
     def test_pdf_flate_stream_is_capped(self):
         """#5 -- the primary format was the one decompression path with no ceiling."""
         import zlib
-        from puretext.formats import pdf
-        from puretext.limits import MAX_PDF_STREAM_BYTES
+        from vanilla_extract.formats import pdf
+        from vanilla_extract.limits import MAX_PDF_STREAM_BYTES
         stream = zlib.compress(b"A" * (MAX_PDF_STREAM_BYTES * 4))
         doc = (b"%PDF-1.4\n1 0 obj\n<< /Filter /FlateDecode /Length "
                + str(len(stream)).encode() + b" >>\nstream\n" + stream
@@ -640,7 +640,7 @@ class TestReviewRegressions(unittest.TestCase):
 
     def test_odd_length_hex_does_not_disable_every_font(self):
         """#6 -- one malformed CMap entry made a whole readable PDF 'undecodable'."""
-        from puretext.formats import pdfcmap
+        from vanilla_extract.formats import pdfcmap
         parsed = pdfcmap._parse_cmap(
             b"begincmap\n1 beginbfchar\n<041> <0042>\nendbfchar\nendcmap")
         self.assertTrue(parsed)
@@ -648,7 +648,7 @@ class TestReviewRegressions(unittest.TestCase):
     def test_field_with_non_participating_group_does_not_abort_the_batch(self):
         """#7 -- m.group(1) is None for `(a)|b`, and .strip() killed the whole run."""
         import tempfile
-        from puretext.batch import Field, run
+        from vanilla_extract.batch import Field, run
         with tempfile.TemporaryDirectory() as d:
             for name in ("a.txt", "b.txt"):
                 with open(os.path.join(d, name), "w", encoding="utf-8") as fh:
@@ -661,7 +661,7 @@ class TestReviewRegressions(unittest.TestCase):
         """#8 -- untrusted text went straight into a spreadsheet the client opens."""
         import csv as _csv
         import tempfile
-        from puretext.batch import write_csv
+        from vanilla_extract.batch import write_csv
         rows = [{"file": "evil.pdf", "v": "=cmd|' /C calc'!A0"},
                 {"file": "b.pdf", "v": "@SUM(1+1)"}]
         with tempfile.TemporaryDirectory() as d:
@@ -684,7 +684,7 @@ class TestReviewRegressions(unittest.TestCase):
     def test_zip_inside_a_scanned_folder_is_not_silently_dropped(self):
         """#12 -- an archive found by walking produced no row and no exception."""
         import tempfile
-        from puretext.batch import run
+        from vanilla_extract.batch import run
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, "a.txt"), "w", encoding="utf-8") as fh:
                 fh.write("plain")
@@ -697,7 +697,7 @@ class TestReviewRegressions(unittest.TestCase):
     def test_recapture_after_a_document_changes_keeps_both(self):
         """#13 -- the second capture overwrote the first and broke --verify."""
         import tempfile
-        from puretext.provenance import Workspace
+        from vanilla_extract.provenance import Workspace
         with tempfile.TemporaryDirectory() as d:
             src = os.path.join(d, "a.txt")
             with open(src, "w", encoding="utf-8") as fh:
@@ -722,7 +722,7 @@ class TestReviewRegressions(unittest.TestCase):
 
 
 def strip_html_bytes(data):
-    from puretext.formats.markup import extract_html
+    from vanilla_extract.formats.markup import extract_html
     return extract_html(data)
 
 
@@ -732,7 +732,7 @@ class TestFileInfo(unittest.TestCase):
 
     def test_records_the_fields_a_datasheet_needs(self):
         import tempfile
-        from puretext.fileinfo import stat_record
+        from vanilla_extract.fileinfo import stat_record
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "a.txt")
             with open(p, "w", encoding="utf-8") as fh:
@@ -750,7 +750,7 @@ class TestFileInfo(unittest.TestCase):
     def test_creation_time_is_never_faked_from_ctime(self):
         """ctime is inode-change time on Linux. Substituting it would be a lie."""
         import tempfile
-        from puretext.fileinfo import stat_record
+        from vanilla_extract.fileinfo import stat_record
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "a.txt")
             with open(p, "w", encoding="utf-8") as fh:
@@ -766,7 +766,7 @@ class TestFileInfo(unittest.TestCase):
 
     def test_synthetic_ownership_is_flagged_not_asserted(self):
         """An NTFS/exFAT mount reports mount options, not file attributes."""
-        from puretext import fileinfo
+        from vanilla_extract import fileinfo
         real = fileinfo.filesystem_of
         try:
             fileinfo.filesystem_of = lambda p: "fuseblk"
@@ -786,7 +786,7 @@ class TestFileInfo(unittest.TestCase):
 
     def test_autofs_never_shadows_the_real_filesystem(self):
         """Two mounts can claim one path; the later real one is the answer."""
-        from puretext import fileinfo
+        from vanilla_extract import fileinfo
         table = fileinfo._mount_table()
         points = [m for m, _ in table]
         self.assertEqual(len(points), len(set(points)), "duplicate mount points")
@@ -795,7 +795,7 @@ class TestFileInfo(unittest.TestCase):
 
     def test_symlink_is_reported_with_its_target(self):
         import tempfile
-        from puretext.fileinfo import stat_record
+        from vanilla_extract.fileinfo import stat_record
         with tempfile.TemporaryDirectory() as d:
             target = os.path.join(d, "real.txt")
             with open(target, "w", encoding="utf-8") as fh:
@@ -812,7 +812,7 @@ class TestFileInfo(unittest.TestCase):
     def test_zip_member_metadata_comes_from_the_entry(self):
         """A member's timestamp can predate the archive by years."""
         import tempfile
-        from puretext.fileinfo import zip_member_record
+        from vanilla_extract.fileinfo import zip_member_record
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "a.zip")
             with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -828,7 +828,7 @@ class TestFileInfo(unittest.TestCase):
         self.assertTrue(r["crc32"])
 
     def test_human_size(self):
-        from puretext.fileinfo import human_size
+        from vanilla_extract.fileinfo import human_size
         self.assertEqual(human_size(0), "0 B")
         self.assertEqual(human_size(999), "999 B")
         self.assertEqual(human_size(1024), "1.0 KB")
@@ -838,7 +838,7 @@ class TestFileInfo(unittest.TestCase):
 class TestDatasheet(unittest.TestCase):
     def test_batch_returns_a_row_per_candidate_including_failures(self):
         import tempfile
-        from puretext.batch import run
+        from vanilla_extract.batch import run
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, "ok.txt"), "w", encoding="utf-8") as fh:
                 fh.write("Ref: A-1")
@@ -854,8 +854,8 @@ class TestDatasheet(unittest.TestCase):
 
     def test_html_datasheet_is_self_contained_and_sortable(self):
         import tempfile
-        from puretext.fileinfo import stat_record
-        from puretext.report import write_datasheet
+        from vanilla_extract.fileinfo import stat_record
+        from vanilla_extract.report import write_datasheet
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "a.txt")
             with open(p, "w", encoding="utf-8") as fh:
@@ -871,7 +871,7 @@ class TestDatasheet(unittest.TestCase):
 
     def test_datasheet_values_are_escaped(self):
         import tempfile
-        from puretext.report import write_datasheet
+        from vanilla_extract.report import write_datasheet
         rows = [{"name": "<script>alert(1)</script>", "size": "1 B"}]
         with tempfile.TemporaryDirectory() as d:
             out = os.path.join(d, "s.html")
@@ -882,8 +882,8 @@ class TestDatasheet(unittest.TestCase):
 
     def test_workspace_records_state_when_found(self):
         import tempfile
-        from puretext.batch import run
-        from puretext.provenance import Workspace
+        from vanilla_extract.batch import run
+        from vanilla_extract.provenance import Workspace
         with tempfile.TemporaryDirectory() as d:
             src = os.path.join(d, "src")
             os.makedirs(src)
@@ -903,7 +903,7 @@ class TestCorruptArchiveRegression(unittest.TestCase):
 
     def test_corrupt_zip_is_reported_not_silently_skipped(self):
         import tempfile
-        from puretext.batch import run
+        from vanilla_extract.batch import run
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, "good.txt"), "w", encoding="utf-8") as fh:
                 fh.write("Ref: OK-1")
@@ -918,7 +918,7 @@ class TestCorruptArchiveRegression(unittest.TestCase):
     def test_valid_zip_is_still_recursed_not_reported(self):
         """The fix must not turn working archives into exceptions."""
         import tempfile
-        from puretext.batch import run
+        from vanilla_extract.batch import run
         with tempfile.TemporaryDirectory() as d:
             with zipfile.ZipFile(os.path.join(d, "valid.zip"), "w") as zf:
                 zf.writestr("in.txt", "Ref: IN-1")

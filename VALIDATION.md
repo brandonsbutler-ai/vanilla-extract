@@ -1,4 +1,4 @@
-# puretext -- Usage, Methods and Validation Results
+# vanilla -- Usage, Methods and Validation Results
 
 Version 0.2.0 · verification run 2026-09-16 · MIT licensed
 
@@ -13,7 +13,7 @@ commands are at the end.
 
 ## 1. What it is
 
-puretext extracts text and named fields from documents, and produces a reviewable table from a
+vanilla_extract extracts text and named fields from documents, and produces a reviewable table from a
 folder of them. It reads PDF, DOCX, PPTX, XLSX, ODT, RTF, EML, MBOX, HTML, XML, CSV, TSV, JSON
 and plain text, plus ZIP archives containing any of those.
 
@@ -28,13 +28,13 @@ and it means there is no supply chain under it to audit.
 ### Read one document
 
 ```
-puretext contract.pdf
+vanilla contract.pdf
 ```
 
 ### A folder into a spreadsheet
 
 ```
-puretext --batch invoices/ --csv results.csv --exceptions skipped.csv
+vanilla --batch invoices/ --csv results.csv --exceptions skipped.csv
 ```
 
 Two tables, always. `results.csv` has a row per document read. `skipped.csv` names every document
@@ -44,7 +44,7 @@ why.
 ### Pull named fields
 
 ```
-puretext --batch invoices/ --csv results.csv \
+vanilla --batch invoices/ --csv results.csv \
     --field "invoice_no=Invoice\s*#?\s*([A-Z0-9-]+)" \
     --field "total=Total\s*:?\s*\$?([0-9,]+\.[0-9]{2})"
 ```
@@ -52,7 +52,7 @@ puretext --batch invoices/ --csv results.csv \
 ### Or let it find the fields itself
 
 ```
-puretext --batch invoices/ --recognize --report review.html --csv results.csv
+vanilla --batch invoices/ --recognize --report review.html --csv results.csv
 ```
 
 `--recognize` reads label/value pairs out of the documents and ranks them by how many documents
@@ -83,7 +83,7 @@ machine.
 ### The datasheet: what each file was when it arrived
 
 ```
-puretext --batch invoices/ --datasheet state.html --csv out.csv
+vanilla --batch invoices/ --datasheet state.html --csv out.csv
 ```
 
 A searchable, sortable page recording each file's state as found: size, modified, accessed and
@@ -104,9 +104,9 @@ Three caveats are built into the output rather than left to the reader:
 ### Keep the original and every correction
 
 ```
-puretext --batch invoices/ --recognize --workspace case01/ --report review.html --csv out.csv
-puretext --workspace case01/ --import-csv corrected.csv
-puretext --workspace case01/ --verify
+vanilla --batch invoices/ --recognize --workspace case01/ --report review.html --csv out.csv
+vanilla --workspace case01/ --import-csv corrected.csv
+vanilla --workspace case01/ --verify
 ```
 
 ```
@@ -136,9 +136,9 @@ Three layers, because they catch different things.
 
 | Layer | What it is | What it catches |
 |---|---|---|
-| **Unit tests** (90) | `python3 -m unittest discover -s tests` | Logic errors in one function, and every past bug as a regression test |
+| **Unit tests** (92) | `python3 -m unittest discover -s tests` | Logic errors in one function, and every past bug as a regression test |
 | **Benchmark** | `python3 benchmark.py <dir>` | Extraction *quality*, scored against an independent implementation |
-| **End-to-end verification** (130 checks) | `python3 verify_e2e.py` | Whether the product does what its documentation says |
+| **End-to-end verification** (156 checks) | `python3 verify_e2e.py` | Whether the product does what its documentation says |
 
 The third layer is the unusual one. Unit tests check units; they cannot tell you the README is
 wrong. `verify_e2e.py` generates a fresh corpus in every supported format, drives the real
@@ -154,7 +154,7 @@ running -- and it has done so twice, which section 7 covers.
 
 PDF output is scored against [poppler](https://poppler.freedesktop.org/)'s `pdftotext`, a mature
 C++ implementation with full font handling, by **token recall**: the fraction of the reference's
-words that puretext also produced, counted as a multiset so repetition is not rewarded.
+words that vanilla_extract also produced, counted as a multiset so repetition is not rewarded.
 
 poppler is the reference, not the target. It is allowed to win; the point is knowing by how much.
 
@@ -264,7 +264,7 @@ unbounded decompression path in the primary format; quadratic time and memory on
 one malformed character-map entry rendering an entire readable PDF undecodable; a field pattern
 that aborted a whole batch; a re-scan that overwrote its own audit trail; an archive that
 vanished without appearing in either output table; and a stray line in the test file that made
-running it directly execute 29 of 64 tests and exit zero.
+running it directly execute 29 of 92 tests and exit zero.
 
 **The end-to-end verifier then caught two more, including one in the documentation:**
 
@@ -296,7 +296,7 @@ Every one of those is now a named regression test.
   name for two different fonts on different pages can decode one of them wrong.
 - **Encryption is detected, never bypassed.** This tool will not help you read a document you do
   not have the password for.
-- **130 passing checks means the documented claims hold today, on this machine, for these
+- **156 passing checks means the documented claims hold today, on this machine, for these
   inputs.** It does not mean the tool is free of defects. The review above found 15 after the
   unit tests were green.
 
@@ -305,11 +305,11 @@ Every one of those is now a named regression test.
 ## 9. Reproduce all of it
 
 ```bash
-git clone https://github.com/brandonsbutler-ai/puretext
-cd puretext
+git clone https://github.com/brandonsbutler-ai/vanilla-extract
+cd vanilla_extract
 
-python3 -m unittest discover -s tests -v    # 90 unit tests
-python3 verify_e2e.py                       # 130 end-to-end claim checks
+python3 -m unittest discover -s tests -v    # 92 unit tests
+python3 verify_e2e.py                       # 156 end-to-end claim checks
 python3 benchmark.py /path/to/your/pdfs     # quality against pdftotext
 ```
 

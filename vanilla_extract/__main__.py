@@ -1,13 +1,13 @@
-r"""CLI: python3 -m puretext <path> [...]
+r"""CLI: python3 -m vanilla_extract <path> [...]
 
-    python3 -m puretext report.pdf
-    python3 -m puretext --json *.docx
-    python3 -m puretext archive.zip
+    python3 -m vanilla_extract report.pdf
+    python3 -m vanilla_extract --json *.docx
+    python3 -m vanilla_extract archive.zip
 
 Batch a folder into a spreadsheet, with every unreadable file accounted for:
 
-    python3 -m puretext --batch invoices/ --csv out.csv --exceptions skipped.csv
-    python3 -m puretext --batch invoices/ --csv out.csv \
+    python3 -m vanilla_extract --batch invoices/ --csv out.csv --exceptions skipped.csv
+    python3 -m vanilla_extract --batch invoices/ --csv out.csv \
         --field "invoice_no=Invoice\s*#?\s*([A-Z0-9-]+)" \
         --field "total=Total\s*:?\s*\$?([0-9,]+\.[0-9]{2})"
 
@@ -39,7 +39,7 @@ def _run_workspace_op(args):
     """--verify / --import-csv against an existing workspace."""
     ws = Workspace(args.workspace)
     if not ws.exists():
-        print(f"puretext: no workspace at {args.workspace}", file=sys.stderr)
+        print(f"vanilla: no workspace at {args.workspace}", file=sys.stderr)
         return 2
 
     if args.verify:
@@ -73,7 +73,7 @@ def _run_batch(args):
     try:
         fields = [Field.parse(spec) for spec in args.field]
     except (ValueError, re.error) as exc:
-        print(f"puretext: {exc}", file=sys.stderr)
+        print(f"vanilla: {exc}", file=sys.stderr)
         return 2
 
     ws = None
@@ -90,13 +90,13 @@ def _run_batch(args):
                               min_support=args.min_support)
         auto_labels = [f["label"] for f in schema]
         if schema:
-            print("puretext: discovered fields --", file=sys.stderr)
+            print("vanilla: discovered fields --", file=sys.stderr)
             for f in schema:
                 print(f"    {f['label']:<24} {f['support']} docs "
                       f"({f['ratio']:.0%})  {f['kind']:<10} e.g. {f['example'][:40]}",
                       file=sys.stderr)
         else:
-            print("puretext: no field common to enough documents; "
+            print("vanilla: no field common to enough documents; "
                   "try --min-support 0.3", file=sys.stderr)
 
     keep_text = (not args.no_text) or bool(args.report)
@@ -126,7 +126,7 @@ def _run_batch(args):
         unreliable = sum(1 for r in datasheet
                          if r.get("ownership_reliable") is False)
         if unreliable:
-            print(f"puretext: {unreliable} file(s) sit on a filesystem that reports "
+            print(f"vanilla: {unreliable} file(s) sit on a filesystem that reports "
                   f"ownership and permissions from mount options rather than from "
                   f"the files; those columns are flagged not reliable",
                   file=sys.stderr)
@@ -151,7 +151,7 @@ def _run_batch(args):
         print(f"{len(exceptions)} skipped -> {args.exceptions}", file=sys.stderr)
     elif exceptions:
         # Never let these vanish just because no path was given.
-        print(f"puretext: {len(exceptions)} file(s) could not be read:",
+        print(f"vanilla: {len(exceptions)} file(s) could not be read:",
               file=sys.stderr)
         for row in exceptions:
             print(f"  {row['file']}: {row['reason']}", file=sys.stderr)
@@ -168,7 +168,7 @@ def _run_batch(args):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        prog="puretext",
+        prog="vanilla",
         description="Extract plain text from documents using only the Python "
                     "standard library.")
     # Optional, because --workspace --verify / --import-csv operate on an
@@ -179,7 +179,7 @@ def main(argv=None):
     parser.add_argument("--quiet", "-q", action="store_true",
                         help="omit the ===== filename ===== banners")
     parser.add_argument("--version", action="version",
-                        version=f"puretext {__version__}")
+                        version=f"vanilla-extract {__version__}")
     parser.add_argument("--batch", action="store_true",
                         help="walk the given paths and emit a table instead of text")
     parser.add_argument("--csv", metavar="PATH",
@@ -232,7 +232,7 @@ def main(argv=None):
 
     for path in args.paths:
         if not os.path.exists(path):
-            print(f"puretext: {path}: no such file", file=sys.stderr)
+            print(f"vanilla: {path}: no such file", file=sys.stderr)
             failed = True
             continue
         try:
@@ -240,7 +240,7 @@ def main(argv=None):
                     (".docx", ".pptx", ".xlsx", ".odt")):
                 for name, text, error in extract_archive(path):
                     if error:
-                        print(f"puretext: {path}!{name}: {error}",
+                        print(f"vanilla: {path}!{name}: {error}",
                               file=sys.stderr)
                         continue
                     if args.json:
@@ -257,10 +257,10 @@ def main(argv=None):
             else:
                 _emit_text(path, text, show_headers)
         except UnsupportedFormat as exc:
-            print(f"puretext: {path}: {exc}", file=sys.stderr)
+            print(f"vanilla: {path}: {exc}", file=sys.stderr)
             failed = True
         except Exception as exc:                      # noqa: BLE001
-            print(f"puretext: {path}: {type(exc).__name__}: {exc}",
+            print(f"vanilla: {path}: {type(exc).__name__}: {exc}",
                   file=sys.stderr)
             failed = True
 

@@ -202,7 +202,7 @@ def write_report(results, exceptions, path, columns=None, title="Extraction repo
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>{_esc(title)}</title><style>{_CSS}</style></head><body><div class="wrap">
 <h1>{_esc(title)}</h1>
-<div class="sub">Generated {stamp} by puretext. Edits stay in this file; nothing is uploaded.</div>
+<div class="sub">Generated {stamp} by vanilla_extract. Edits stay in this file; nothing is uploaded.</div>
 <div class="stats">
   <div class="stat"><b>{len(results)}</b><span>documents read</span></div>
   <div class="stat"><b>{len(exceptions)}</b><span>could not be read</span></div>

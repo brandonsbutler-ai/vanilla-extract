@@ -102,7 +102,7 @@ class Workspace:
             os.makedirs(d, exist_ok=True)
         manifest = {
             "schema": _SCHEMA,
-            "tool": f"puretext {tool_version}",
+            "tool": f"vanilla_extract {tool_version}",
             "created": _utc(),
             "sources": [os.path.abspath(p) for p in source_paths],
             "documents": [],

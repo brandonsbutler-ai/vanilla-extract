@@ -1,4 +1,4 @@
-# puretext
+# vanilla-extract
 
 **Pull plain text out of documents using nothing but the Python standard library.**
 
@@ -7,20 +7,20 @@ runs — which is the entire point: in a locked-down environment, adding a depen
 approval that takes longer than the job.
 
 ```bash
-python3 -m puretext contract.pdf
-python3 -m puretext --json invoices/*.docx > invoices.jsonl
-python3 -m puretext archive.zip          # reads every document inside
+vanilla contract.pdf
+vanilla --json invoices/*.docx > invoices.jsonl
+vanilla archive.zip          # reads every document inside
 ```
 
 ```python
-from puretext import extract_file
+from vanilla_extract import extract_file
 text = extract_file("statement.pdf")
 ```
 
 **A folder of documents into a spreadsheet**, which is the shape this work usually takes:
 
 ```bash
-python3 -m puretext --batch invoices/ --csv results.csv --exceptions skipped.csv \
+vanilla --batch invoices/ --csv results.csv --exceptions skipped.csv \
     --field "invoice_no=Invoice\s*#?\s*([A-Z0-9-]+)" \
     --field "total=Total\s*:?\s*\$?([0-9,]+\.[0-9]{2})"
 ```
@@ -29,11 +29,11 @@ python3 -m puretext --batch invoices/ --csv results.csv --exceptions skipped.csv
 idea what regex to write:
 
 ```bash
-python3 -m puretext --batch invoices/ --recognize --report review.html --csv results.csv
+vanilla --batch invoices/ --recognize --report review.html --csv results.csv
 ```
 
 ```
-puretext: discovered fields --
+vanilla: discovered fields --
     invoice number           4 docs (100%)  identifier e.g. INV-1001
     invoice date             4 docs (100%)  date_iso   e.g. 2026-03-14
     customer                 4 docs (100%)  text       e.g. Northwind Traders
@@ -84,7 +84,7 @@ the extension is the usual reason a batch job silently produces nothing for part
 Claims about extraction quality are worth nothing without numbers, so `benchmark.py` scores
 output against [poppler](https://poppler.freedesktop.org/)'s `pdftotext` — a mature C++
 implementation with full font handling — by token recall: the fraction of the reference's words
-that puretext also produced, counted as a multiset.
+that vanilla_extract also produced, counted as a multiset.
 
 pdftotext is the reference, not the target. It is allowed to win. The point is knowing by how much.
 
@@ -92,7 +92,7 @@ pdftotext is the reference, not the target. It is allowed to win. The point is k
 
 ```
 token recall : mean 1.000   median 1.000   min 1.000
->= 0.99      : 209/209 (100.0%)
+>= 0.99      : 210/210 (100.0%)
 ```
 
 **Corpus B — 86 commercial PDFs** (Adobe PDF Library, Mac Quartz; illustrated, multi-column):
@@ -169,7 +169,7 @@ LibreOffice PDF returns control characters instead of words.
 **From source** -- nothing to resolve, because there is nothing to resolve:
 
 ```bash
-pip install .            # gives you a `puretext` command
+pip install .            # gives you a `vanilla` command
 ```
 
 **Linux, without pip:**
@@ -183,11 +183,11 @@ PREFIX=/usr/local sudo ./packaging/install-linux.sh
 
 ```bash
 pip install pyinstaller
-python3 packaging/build_standalone.py           # -> dist/puretext(.exe)
+python3 packaging/build_standalone.py           # -> dist/vanilla(.exe)
 ```
 
-**Windows installer:** build the executable as above, then `iscc packaging\puretext.iss`.
-It produces a per-user installer that needs no administrator rights and puts `puretext` on PATH --
+**Windows installer:** build the executable as above, then `iscc packaging\vanilla-extract.iss`.
+It produces a per-user installer that needs no administrator rights and puts `vanilla` on PATH --
 which matters, because the people who most need a dependency-free extractor are usually the same
 people who cannot install Python or pip on their work machine.
 
@@ -200,8 +200,8 @@ A content hash proves the bytes did not change. The datasheet records the circum
 arrived in.
 
 ```bash
-puretext --batch invoices/ --datasheet state.csv --csv out.csv     # CSV
-puretext --batch invoices/ --datasheet state.html --csv out.csv    # searchable page
+vanilla --batch invoices/ --datasheet state.csv --csv out.csv     # CSV
+vanilla --batch invoices/ --datasheet state.html --csv out.csv    # searchable page
 ```
 
 Per file: size (human and in bytes), modified, accessed, created, inode-change time, rwx
@@ -236,10 +236,10 @@ Extraction deliverables get corrected by hand, and once corrected there is no wa
 values came out of the document and which came out of a person. A workspace answers that:
 
 ```bash
-puretext --batch invoices/ --recognize --workspace case01/ --report review.html --csv out.csv
+vanilla --batch invoices/ --recognize --workspace case01/ --report review.html --csv out.csv
 # ... client corrects values in review.html and exports corrected.csv ...
-puretext --workspace case01/ --import-csv corrected.csv
-puretext --workspace case01/ --verify
+vanilla --workspace case01/ --import-csv corrected.csv
+vanilla --workspace case01/ --verify
 ```
 
 ```
@@ -326,8 +326,8 @@ rather have one.
 Two layers, both runnable:
 
 ```bash
-python3 -m unittest discover -s tests -v     # 90 unit tests
-python3 verify_e2e.py                        # 130 end-to-end claim checks
+python3 -m unittest discover -s tests -v     # 92 unit tests
+python3 verify_e2e.py                        # 156 end-to-end claim checks
 ```
 
 `verify_e2e.py` exists because unit tests check units, not promises. It generates a fresh corpus
@@ -346,7 +346,7 @@ figures here are whatever it last measured, not what would read best.
 python3 -m unittest discover -s tests -v
 ```
 
-90 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
+92 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
 there is nothing opaque in the repo. The suite covers the cases that actually break extractors:
 balanced parens inside PDF strings, escaped close-parens, octal escapes, odd hex nibbles,
 RTF `\fonttbl` contents leaking into output, cp1252 fallback, and misnamed files -- plus the

@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Build a single-file puretext executable for the host platform.
+"""Build a single-file vanilla_extract executable for the host platform.
 
-Produces dist/puretext (Linux) or dist/puretext.exe (Windows) -- one file, no
+Produces dist/vanilla (Linux) or dist/vanilla.exe (Windows) -- one file, no
 Python installation required on the target machine. That matters because the
 people who most need a dependency-free extractor are usually the ones who
 cannot install Python either.
 
 PyInstaller is a BUILD-time tool. It is not a runtime dependency and nothing
-it adds changes the library's no-dependencies promise: `import puretext` still
+it adds changes the library's no-dependencies promise: `import vanilla_extract` still
 pulls in nothing but the standard library.
 
     python3 -m pip install pyinstaller
@@ -32,20 +32,20 @@ def main():
     cmd = [
         "pyinstaller",
         "--onefile",
-        "--name", "puretext",
+        "--name", "vanilla_extract",
         "--distpath", os.path.join(ROOT, "dist"),
         "--workpath", os.path.join(ROOT, "build"),
         "--specpath", os.path.join(ROOT, "build"),
         "--console",
         # Nothing to bundle beyond the package itself; no data files, no hooks.
-        os.path.join(ROOT, "puretext", "__main__.py"),
+        os.path.join(ROOT, "vanilla_extract", "__main__.py"),
     ]
     print("running:", " ".join(cmd))
     result = subprocess.run(cmd, cwd=ROOT)
     if result.returncode != 0:
         return result.returncode
 
-    name = "puretext.exe" if platform.system() == "Windows" else "puretext"
+    name = "vanilla.exe" if platform.system() == "Windows" else "vanilla_extract"
     built = os.path.join(ROOT, "dist", name)
     if not os.path.isfile(built):
         print(f"expected {built} but it was not produced", file=sys.stderr)

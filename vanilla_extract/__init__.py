@@ -1,6 +1,6 @@
-"""puretext -- pull plain text out of documents using only the Python standard library.
+"""vanilla -- pull plain text out of documents using only the Python standard library.
 
-    from puretext import extract_file
+    from vanilla_extract import extract_file
     text = extract_file("contract.pdf")
 
 Supports PDF, DOCX, PPTX, XLSX, ODT, RTF, EML, MBOX, HTML, XML, CSV, TSV,
