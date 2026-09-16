@@ -19,7 +19,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from puretext import extract_file            # noqa: E402
-from puretext.formats.pdf import EncryptedPDF  # noqa: E402
+from puretext.formats.pdf import EncryptedPDF, UndecodableText  # noqa: E402
 
 _WORD = re.compile(r"[A-Za-z0-9]+")
 
@@ -67,7 +67,7 @@ def main(directory):
         print(f"no PDFs in {directory}")
         return 1
 
-    scores, empties, skipped, encrypted = [], [], 0, []
+    scores, empties, skipped, encrypted, undecodable = [], [], 0, [], []
     for path in paths:
         ref = reference(path)
         if ref is None:
@@ -77,6 +77,9 @@ def main(directory):
             ours = extract_file(path)
         except EncryptedPDF:
             encrypted.append(os.path.basename(path))
+            continue
+        except UndecodableText:
+            undecodable.append(os.path.basename(path))
             continue
         except Exception as exc:                      # noqa: BLE001
             empties.append((os.path.basename(path), f"{type(exc).__name__}"))
@@ -106,6 +109,9 @@ def main(directory):
         print(f"  >= {threshold:.2f} recall : {count}/{n} ({100 * count / n:.1f}%)")
     if encrypted:
         print(f"\nencrypted, refused with a clear error: {len(encrypted)}"
+              f"  (reported separately -- not scored)")
+    if undecodable:
+        print(f"unmapped CID fonts, refused with a clear error: {len(undecodable)}"
               f"  (reported separately -- not scored)")
     if empties:
         print(f"\nfiles returning nothing usable: {len(empties)}")

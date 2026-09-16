@@ -1,0 +1,134 @@
+# puretext
+
+**Pull plain text out of documents using nothing but the Python standard library.**
+
+No `pip install`. No wheels, no native extensions, no C toolchain. Drop the package in and it
+runs — which is the entire point: in a locked-down environment, adding a dependency needs an
+approval that takes longer than the job.
+
+```bash
+python3 -m puretext contract.pdf
+python3 -m puretext --json invoices/*.docx > invoices.jsonl
+python3 -m puretext archive.zip          # reads every document inside
+```
+
+```python
+from puretext import extract_file
+text = extract_file("statement.pdf")
+```
+
+## Formats
+
+| | |
+|---|---|
+| **PDF** | content-stream parsing, Flate decompression, `/ToUnicode` CMap decoding |
+| **Office** | DOCX, PPTX, XLSX, ODT |
+| **Email** | EML, MBOX — headers, body, attachment names |
+| **Markup** | HTML (scripts and styles dropped), XML |
+| **Data** | CSV, TSV (delimiter sniffed), JSON (flattened to `path: value`) |
+| **Text** | TXT, MD, LOG, with encoding detection |
+| **Archives** | ZIP containing any of the above |
+
+Routing is by **content first, extension second**. In any real corpus a meaningful fraction of
+files are misnamed — a `.doc` that is really RTF, a `.txt` that is really a PDF — and trusting
+the extension is the usual reason a batch job silently produces nothing for part of its input.
+
+## Measured results
+
+Claims about extraction quality are worth nothing without numbers, so `benchmark.py` scores
+output against [poppler](https://poppler.freedesktop.org/)'s `pdftotext` — a mature C++
+implementation with full font handling — by token recall: the fraction of the reference's words
+that puretext also produced, counted as a multiset.
+
+pdftotext is the reference, not the target. It is allowed to win. The point is knowing by how much.
+
+**Corpus A — 209 tool-generated PDFs** (fpdf2, LibreOffice Writer):
+
+```
+token recall : mean 1.000   median 1.000   min 1.000
+>= 0.99      : 209/209 (100.0%)
+```
+
+**Corpus B — 86 commercial PDFs** (Adobe PDF Library, Mac Quartz; illustrated, multi-column):
+
+```
+files measured : 53
+token recall   : mean 0.873   median 0.912   min 0.007   max 0.961
+>= 0.95        : 4/53  (7.5%)
+>= 0.90        : 35/53 (66.0%)
+>= 0.50        : 51/53 (96.2%)
+
+encrypted, refused with a clear error: 33   (reported separately, not scored)
+```
+
+Read that honestly: **excellent on PDFs produced by tools, good-but-not-perfect on complex
+commercial ones, and never quite matching poppler on the hard ones.** If you need the last few
+percent on illustrated multi-column layouts, use poppler. If you need no dependencies, use this.
+
+Reproduce with `python3 benchmark.py /path/to/pdfs`.
+
+## It fails loudly
+
+The worst behavior a text extractor can have is returning something that *looks* like a result.
+An empty string reads as an empty document; mojibake poisons a dataset silently. Both get a
+specific exception instead:
+
+- **`EncryptedPDF`** — the file uses the standard security handler. Commercial PDFs are routinely
+  encrypted with an *empty user password* purely to set permission flags: readable in any viewer,
+  still encrypted on disk. 33 of the 86 files in corpus B are like this. Decrypting needs RC4 and
+  AES, and AES is not in the standard library, so it is out of scope by design.
+- **`UndecodableText`** — text was drawn, but every run decoded to glyph IDs rather than
+  characters. Raised only when *nothing* survives; a page mixing an unmapped decorative heading
+  with readable body text keeps the body.
+- **`UnsupportedFormat`** — neither content nor extension identifies a handler.
+
+## Known limits
+
+- **No font-program parsing.** CID-keyed fonts using Identity-H with no `/ToUnicode` map cannot be
+  decoded — recovering characters means reading the CFF/TrueType cmap inside the embedded font.
+  Affected runs are dropped rather than emitted as noise. One file in corpus B (Mac Quartz,
+  Identity-H throughout) returns almost nothing for this reason and scores 0.007.
+- **No OCR.** A scanned page holds an image, not text.
+- **Layout is approximated, not reconstructed.** Multi-column pages interleave. This is the main
+  source of the gap against `pdftotext -layout` on corpus B.
+- **Fonts are keyed by resource name across the document**, not per page-resource dictionary. A
+  file reusing `/F1` for two different fonts on different pages can decode one of them wrong.
+  Handling it properly means walking the page tree; the benchmark is how I know the trade is
+  acceptable for tool-generated files.
+- **Encryption is detected, never bypassed.** This library will not help you read a document you
+  do not have the password for.
+
+## How the PDF reader works
+
+A PDF is a graph of objects; visible text lives in content streams, usually Flate-compressed,
+written as PostScript-ish operators. Three steps: find the streams, decompress them, and pull
+the arguments of the text-showing operators (`Tj`, `TJ`, `'`, `"`).
+
+Two pieces are where a naive implementation goes wrong:
+
+**The string reader is a tokenizer, not a regex.** A PDF literal string can contain balanced
+parentheses and backslash escapes — `(a (b) c)` is one string, and `(a\)b)` is one string
+containing a close paren. A regex gets both wrong, which is the usual reason a hand-rolled PDF
+reader returns truncated text.
+
+**`/ToUnicode` CMaps are parsed.** Word and LibreOffice embed a *subset* of each font and
+renumber the glyphs 1, 2, 3… in order of first appearance. The content stream then draws
+`\x01\x02\x03`, which is meaningless without the font's CMap. Reading it requires indexing the
+PDF's indirect objects — including the ones packed inside compressed object streams (`/ObjStm`),
+which is where PDF 1.5+ puts them — and resolving `12 0 R` references. Without this, every
+LibreOffice PDF returns control characters instead of words.
+
+## Tests
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+29 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
+there is nothing opaque in the repo. The suite covers the cases that actually break extractors:
+balanced parens inside PDF strings, escaped close-parens, octal escapes, odd hex nibbles,
+RTF `\fonttbl` contents leaking into output, cp1252 fallback, and misnamed files.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

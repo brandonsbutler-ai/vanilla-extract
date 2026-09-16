@@ -28,6 +28,20 @@ import zlib
 from . import pdfcmap
 
 
+class UndecodableText(Exception):
+    """Text was found but its characters cannot be recovered.
+
+    Happens with CID-keyed fonts using Identity-H encoding and NO /ToUnicode
+    map: the content stream holds glyph IDs private to an embedded font
+    program, so recovering characters means parsing the CFF/TrueType cmap
+    inside that font -- well beyond this library's scope.
+
+    Raised rather than returning the bytes, because the alternative is
+    emitting hundreds of kilobytes of mojibake into a caller's dataset. A
+    loud failure is recoverable; silent corruption is not.
+    """
+
+
 class EncryptedPDF(Exception):
     """The PDF's streams are encrypted, so its text cannot be read.
 
@@ -162,6 +176,19 @@ def _read_hex_string(buf, i):
         return b"", end + 1
 
 
+def _is_garbage(text, max_control_ratio=0.2):
+    """True when a decoded run is glyph IDs rather than characters.
+
+    Applied per STRING, not per document. A page often mixes a decorative
+    heading in an unmapped font with body text that decodes perfectly; judging
+    the whole document would throw the body away to avoid the heading.
+    """
+    if not text:
+        return False
+    control = sum(1 for c in text if not c.isprintable() and c not in "\n\r\t ")
+    return (control / len(text)) > max_control_ratio
+
+
 def _decode_string(raw, cmap=None):
     """Bytes of a PDF string -> str, through a /ToUnicode CMap when there is one.
 
@@ -194,11 +221,15 @@ def _extract_content(buf, cmaps=None):
         c = buf[i:i + 1]
         if c == b"(":
             s, i = _read_literal_string(buf, i)
-            pending.append(_decode_string(s, active))
+            decoded = _decode_string(s, active)
+            if not _is_garbage(decoded):
+                pending.append(decoded)
             continue
         if c == b"<" and buf[i + 1:i + 2] != b"<":
             s, i = _read_hex_string(buf, i)
-            pending.append(_decode_string(s, active))
+            decoded = _decode_string(s, active)
+            if not _is_garbage(decoded):
+                pending.append(decoded)
             continue
         if c == b"/":
             # A name object: remember it in case the next operator is Tf.
@@ -238,6 +269,21 @@ def _extract_content(buf, cmaps=None):
     return "".join(out)
 
 
+def _is_plausible_text(text, sample=20000, max_control_ratio=0.05):
+    """Heuristic guard against emitting mojibake.
+
+    Correctly decoded prose contains essentially no control characters. Glyph
+    IDs decoded as if they were characters contain a great many. Sampling the
+    head keeps this cheap on large documents.
+    """
+    head = text[:sample]
+    if not head:
+        return True
+    control = sum(1 for c in head
+                  if not c.isprintable() and c not in "\n\r\t ")
+    return (control / len(head)) <= max_control_ratio
+
+
 def _is_encrypted(data):
     """True when the trailer names an /Encrypt dictionary.
 
@@ -271,15 +317,24 @@ def extract_pdf(fh):
         # A malformed font table must not cost us the document's text.
         cmaps = {}
     pages = []
+    saw_text_ops = False
     for header, raw in _iter_streams(data):
         body = _decompress(header, raw)
         if not body:
             continue
         if b"Tj" not in body and b"TJ" not in body:
             continue          # not a text-bearing content stream
+        saw_text_ops = True
         text = _extract_content(body, cmaps)
         if text.strip():
             pages.append(text)
     joined = "\n".join(pages)
     # Collapse the runs of blank lines that line-positioning operators create.
-    return re.sub(r"\n{3,}", "\n\n", joined).strip()
+    result = re.sub(r"\n{3,}", "\n\n", joined).strip()
+    if saw_text_ops and not result:
+        # Text was drawn, but every run decoded to glyph IDs.
+        raise UndecodableText(
+            "PDF text uses fonts with no /ToUnicode map (typically CID-keyed "
+            "Identity-H); characters cannot be recovered without parsing the "
+            "embedded font program")
+    return result
