@@ -20,8 +20,8 @@ LIBDIR="$PREFIX/lib/vanilla_extract"
 mkdir -p "$BINDIR"
 
 if [[ -f "$ROOT/dist/vanilla" ]]; then
-    install -m 0755 "$ROOT/dist/vanilla" "$BINDIR/vanilla_extract"
-    echo "installed standalone binary -> $BINDIR/vanilla_extract"
+    install -m 0755 "$ROOT/dist/vanilla" "$BINDIR/vanilla"
+    echo "installed standalone binary -> $BINDIR/vanilla"
 else
     command -v python3 >/dev/null 2>&1 || {
         echo "python3 not found, and no prebuilt binary in dist/." >&2
@@ -31,13 +31,13 @@ else
     rm -rf "$LIBDIR"
     mkdir -p "$LIBDIR"
     cp -r "$ROOT/vanilla_extract" "$LIBDIR/"
-    cat > "$BINDIR/vanilla_extract" <<LAUNCHER
+    cat > "$BINDIR/vanilla" <<LAUNCHER
 #!/usr/bin/env bash
 exec python3 -c 'import sys; sys.path.insert(0, "$LIBDIR"); from vanilla_extract.__main__ import main; sys.exit(main())' "\$@"
 LAUNCHER
-    chmod 0755 "$BINDIR/vanilla_extract"
+    chmod 0755 "$BINDIR/vanilla"
     echo "installed package -> $LIBDIR"
-    echo "installed launcher -> $BINDIR/vanilla_extract"
+    echo "installed launcher -> $BINDIR/vanilla"
 fi
 
 if ! printf '%s' ":$PATH:" | grep -q ":$BINDIR:"; then
@@ -47,4 +47,4 @@ if ! printf '%s' ":$PATH:" | grep -q ":$BINDIR:"; then
 fi
 
 echo
-"$BINDIR/vanilla_extract" --version
+"$BINDIR/vanilla" --version

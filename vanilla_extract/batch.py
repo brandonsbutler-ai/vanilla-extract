@@ -24,7 +24,17 @@ import zipfile
 
 from . import UnsupportedFormat, extract, extract_file
 from . import fileinfo, recognize
-from .limits import ArchiveTooLarge, read_member
+from .limits import ArchiveTooLarge, Budget, read_member
+
+# One decompression budget per archive, so the 1 GB whole-archive cap that
+# limits.py documents actually applies in batch mode. Without it only the
+# per-member cap ran, and forty members each declaring 200 MB at exactly the
+# allowed ratio decompressed to 8 GB.
+_BUDGETS = {}
+
+
+def _budget_for(archive):
+    return _BUDGETS.setdefault(os.path.abspath(archive), Budget())
 from .formats.pdf import EncryptedPDF, UndecodableText
 
 # Media and binaries we do not attempt; listing them keeps the exceptions
@@ -71,13 +81,12 @@ class Field:
         return cls(name.strip(), pattern)
 
 
-def _member_info(archive, member):
-    """ZipInfo for one member, or None if it cannot be read."""
-    try:
-        with zipfile.ZipFile(archive) as zf:
-            return zf.getinfo(member)
-    except (KeyError, zipfile.BadZipFile, OSError):
-        return None
+# A ZIP may contain the same name twice. zf.getinfo(name) resolves through
+# NameToInfo, which keeps only the LAST entry, so re-fetching a member by name
+# silently returns the wrong bytes -- the earlier member is never extracted,
+# never hashed and never reported. That is a standard archive-evasion trick and
+# this is the untrusted-input path, so the ZipInfo OBJECT is carried through
+# instead of the filename.
 
 
 def _walk(paths, recurse_archives=True):
@@ -101,17 +110,31 @@ def _walk(paths, recurse_archives=True):
                         except (zipfile.BadZipFile, OSError):
                             yield full, None
                             continue
-                        for info in members:
-                            yield f"{full}!{info.filename}", (full, info.filename)
+                        for i, info in enumerate(members):
+                            dup = sum(1 for m in members[:i]
+                                      if m.filename == info.filename)
+                            suffix = f"#{dup + 1}" if dup else ""
+                            yield f"{full}!{info.filename}{suffix}", (full, info)
                         continue
                     yield full, None
         elif zipfile.is_zipfile(path) and recurse_archives and not path.lower().endswith(
                 (".docx", ".pptx", ".xlsx", ".odt")):
-            with zipfile.ZipFile(path) as zf:
-                for info in zf.infolist():
-                    if info.is_dir():
-                        continue
-                    yield f"{path}!{info.filename}", (path, info.filename)
+            # is_zipfile only validates the end-of-central-directory record, so
+            # an archive with a damaged central directory passes it and then
+            # raises here. Unguarded, that killed the whole batch from inside
+            # the generator -- outside run()'s try -- which is exactly what this
+            # module promises never to happen.
+            try:
+                with zipfile.ZipFile(path) as zf:
+                    members = [i for i in zf.infolist() if not i.is_dir()]
+            except (zipfile.BadZipFile, OSError, RuntimeError):
+                yield path, None
+                continue
+            for i, info in enumerate(members):
+                # The index disambiguates repeated names in the label.
+                dup = sum(1 for m in members[:i] if m.filename == info.filename)
+                suffix = f"#{dup + 1}" if dup else ""
+                yield f"{path}!{info.filename}{suffix}", (path, info)
         else:
             yield path, None
 
@@ -121,10 +144,38 @@ def _load(label, source):
     archive the original alongside what was read from it."""
     if source is None:
         return extract_file(label), label, None
-    archive, member = source
+    archive, info = source
     with zipfile.ZipFile(archive) as zf:
-        data = read_member(zf, zf.getinfo(member))
-    return extract(data, os.path.basename(member)), None, data
+        data = read_member(zf, info, _budget_for(archive))
+    return (extract(data, os.path.basename(info.filename.replace("\\", "/"))),
+            None, data)
+
+
+def _archive_failure(workspace, label, meta, source, reason):
+    """Record the ORIGINAL of a document we could not read.
+
+    provenance.py describes a workspace as holding "the source documents as
+    received", and --verify reports that every artefact matches its hash. Both
+    were true only of the documents that READ successfully: encrypted PDFs,
+    unsupported formats and scans with no text layer were skipped entirely, so
+    the files most likely to be disputed were the ones missing from the record.
+    """
+    if workspace is None:
+        return
+    src_path = label if source is None else None
+    src_bytes = None
+    if source is not None:
+        try:
+            archive, info = source
+            with zipfile.ZipFile(archive) as zf:
+                src_bytes = read_member(zf, info, _budget_for(archive))
+        except Exception:                 # noqa: BLE001 - best effort only
+            src_bytes = None
+    try:
+        workspace.capture(label, "", source_path=src_path,
+                          source_bytes=src_bytes, file_state=meta)
+    except Exception:                     # noqa: BLE001
+        pass                              # never let archiving break the batch
 
 
 def _record(sheet, meta, characters, result):
@@ -153,6 +204,7 @@ def run(paths, fields=None, include_text=True, max_text=None, auto_labels=None,
     fields = fields or []
     auto_labels = auto_labels or []
     datasheet = []
+    _BUDGETS.clear()
     results, exceptions = [], []
 
     for label, source in _walk(paths):
@@ -165,9 +217,8 @@ def run(paths, fields=None, include_text=True, max_text=None, auto_labels=None,
                 if source is None:
                     meta = fileinfo.stat_record(label)
                 else:
-                    info = _member_info(*source)
-                    meta = (fileinfo.zip_member_record(info, source[0])
-                            if info is not None else None)
+                    archive, info = source
+                    meta = fileinfo.zip_member_record(info, archive)
             except OSError as exc:
                 meta = {"path": label, "name": os.path.basename(label),
                         "read_result": f"stat failed: {exc}"}
@@ -175,31 +226,37 @@ def run(paths, fields=None, include_text=True, max_text=None, auto_labels=None,
             text, src_path, src_bytes = _load(label, source)
         except EncryptedPDF as exc:
             _record(datasheet, meta, None, "encrypted")
+            _archive_failure(workspace, label, meta, source, "encrypted")
             exceptions.append({"file": label, "reason": "encrypted",
                                "detail": str(exc)})
             continue
         except UndecodableText as exc:
             _record(datasheet, meta, None, "undecodable_fonts")
+            _archive_failure(workspace, label, meta, source, "undecodable_fonts")
             exceptions.append({"file": label, "reason": "undecodable_fonts",
                                "detail": str(exc)})
             continue
         except UnsupportedFormat as exc:
             _record(datasheet, meta, None, "unsupported_format")
+            _archive_failure(workspace, label, meta, source, "unsupported_format")
             exceptions.append({"file": label, "reason": "unsupported_format",
                                "detail": str(exc)})
             continue
         except ArchiveTooLarge as exc:
             _record(datasheet, meta, None, "archive_bomb")
+            _archive_failure(workspace, label, meta, source, "archive_bomb")
             exceptions.append({"file": label, "reason": "archive_bomb",
                                "detail": str(exc)})
             continue
         except (OSError, zipfile.BadZipFile) as exc:
             _record(datasheet, meta, None, "unreadable")
+            _archive_failure(workspace, label, meta, source, "unreadable")
             exceptions.append({"file": label, "reason": "unreadable",
                                "detail": f"{type(exc).__name__}: {exc}"})
             continue
         except Exception as exc:                      # noqa: BLE001
             _record(datasheet, meta, None, "error")
+            _archive_failure(workspace, label, meta, source, "error")
             exceptions.append({"file": label, "reason": "error",
                                "detail": f"{type(exc).__name__}: {exc}"})
             continue
@@ -208,6 +265,7 @@ def run(paths, fields=None, include_text=True, max_text=None, auto_labels=None,
             # Read fine, contained nothing. Almost always a scan with no text
             # layer -- a caller needs to see this, not a blank row.
             _record(datasheet, meta, 0, "no_text_found")
+            _archive_failure(workspace, label, meta, source, "no_text_found")
             exceptions.append({"file": label, "reason": "no_text_found",
                                "detail": "document read successfully but holds "
                                          "no extractable text (often a scan "

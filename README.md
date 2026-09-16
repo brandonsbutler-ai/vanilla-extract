@@ -88,7 +88,7 @@ that vanilla_extract also produced, counted as a multiset.
 
 pdftotext is the reference, not the target. It is allowed to win. The point is knowing by how much.
 
-**Corpus A — 209 tool-generated PDFs** (fpdf2, LibreOffice Writer):
+**Corpus A — 210 tool-generated PDFs** (fpdf2, LibreOffice Writer):
 
 ```
 token recall : mean 1.000   median 1.000   min 1.000
@@ -326,7 +326,7 @@ rather have one.
 Two layers, both runnable:
 
 ```bash
-python3 -m unittest discover -s tests -v     # 92 unit tests
+python3 -m unittest discover -s tests -v     # 100 unit tests
 python3 verify_e2e.py                        # 156 end-to-end claim checks
 ```
 
@@ -346,7 +346,7 @@ figures here are whatever it last measured, not what would read best.
 python3 -m unittest discover -s tests -v
 ```
 
-92 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
+100 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
 there is nothing opaque in the repo. The suite covers the cases that actually break extractors:
 balanced parens inside PDF strings, escaped close-parens, octal escapes, odd hex nibbles,
 RTF `\fonttbl` contents leaking into output, cp1252 fallback, and misnamed files -- plus the

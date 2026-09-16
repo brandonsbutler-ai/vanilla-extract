@@ -927,5 +927,124 @@ class TestCorruptArchiveRegression(unittest.TestCase):
         self.assertTrue(any("in.txt" in r["file"] for r in results))
 
 
+class TestPostRenameReviewRegressions(unittest.TestCase):
+    """One test per finding from the post-rename review, 2026-09-16."""
+
+    def test_duplicate_zip_names_do_not_hide_a_member(self):
+        """#2 -- getinfo(name) keeps only the LAST entry, so the first vanished."""
+        import tempfile
+        import warnings
+        from vanilla_extract.batch import run
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "dup.zip")
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                with zipfile.ZipFile(path, "w") as zf:
+                    zf.writestr("doc.txt", "FIRST member content")
+                    zf.writestr("doc.txt", "SECOND member content")
+            results, _ = run([path])
+        texts = " ".join(r["text"] for r in results)
+        self.assertIn("FIRST member content", texts)
+        self.assertIn("SECOND member content", texts)
+        self.assertEqual(len(results), 2)
+
+    def test_corrupt_archive_named_directly_does_not_abort(self):
+        """#3 -- is_zipfile only checks the EOCD; ZipFile then raised in _walk."""
+        import tempfile
+        from vanilla_extract.batch import run
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "bad.zip")
+            with zipfile.ZipFile(path, "w") as zf:
+                zf.writestr("a.txt", "hello")
+            raw = bytearray(open(path, "rb").read())
+            i = raw.find(b"PK\x01\x02")
+            raw[i:i + 4] = b"PK\x09\x09"        # corrupt the central directory
+            with open(path, "wb") as fh:
+                fh.write(raw)
+            results, exceptions = run([path])      # must not raise
+        self.assertEqual(results, [])
+        self.assertTrue(exceptions)
+
+    def test_report_export_includes_a_header_row(self):
+        """#1 -- without it, --import-csv ate the first document as field names."""
+        import tempfile
+        from vanilla_extract.report import write_report
+        rows = [{"file": "a.pdf", "characters": 1, "total": "$5.00", "text": "t"}]
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "r.html")
+            write_report(rows, [], path)
+            doc = open(path, encoding="utf-8").read()
+        self.assertIn('id="resultshead"', doc)
+        self.assertIn('data-col="file"', doc)
+        # the export must gather the header, not just the tbody
+        export_js = doc.split("export")[1][:500]
+        self.assertIn("resultshead", export_js)
+
+    def test_workspace_keeps_the_original_of_an_unreadable_document(self):
+        """#5 -- the files most likely to be disputed were the ones omitted."""
+        import tempfile
+        from vanilla_extract.batch import run
+        from vanilla_extract.provenance import Workspace
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(d, "src")
+            os.makedirs(src)
+            body = make_pdf("BT (x) Tj ET").replace(
+                b"%%EOF", b"trailer\n<< /Encrypt 9 0 R >>\n%%EOF")
+            with open(os.path.join(src, "locked.pdf"), "wb") as fh:
+                fh.write(body)
+            ws = Workspace(os.path.join(d, "case"))
+            ws.create("0.2.0", [src])
+            run([src], workspace=ws)
+            docs = ws.load()["documents"]
+        self.assertEqual(len(docs), 1)
+        self.assertIsNotNone(docs[0]["original_sha256"])
+
+    def test_archive_budget_applies_in_batch_mode(self):
+        """#4 -- only the per-member cap ran; the whole-archive total did not."""
+        from vanilla_extract import batch
+        self.assertTrue(hasattr(batch, "_budget_for"))
+        a = batch._budget_for("/tmp/one.zip")
+        self.assertIs(a, batch._budget_for("/tmp/one.zip"))     # shared per archive
+        self.assertIsNot(a, batch._budget_for("/tmp/two.zip"))
+
+    def test_zip_members_are_not_blamed_on_a_foreign_mount(self):
+        """#9 -- the banner asserted something false about where files live."""
+        import tempfile
+        from vanilla_extract.fileinfo import zip_member_record
+        from vanilla_extract.report import write_datasheet
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "a.zip")
+            with zipfile.ZipFile(path, "w") as zf:
+                zf.writestr("inner.txt", "x")
+                info = zf.getinfo("inner.txt")
+            rows = [zip_member_record(info, path)]
+            out = os.path.join(d, "s.html")
+            write_datasheet(rows, out, columns=["name", "size"])
+            doc = open(out, encoding="utf-8").read()
+        self.assertIn("inside ZIP archives", doc)
+        self.assertNotIn("mount options", doc)
+
+    def test_installers_agree_on_the_command_name(self):
+        """#6/#7 -- a blanket rename broke both, and the check agreed with them."""
+        import tomllib
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, "pyproject.toml"), "rb") as fh:
+            command = next(iter(tomllib.load(fh)["project"]["scripts"]))
+        build = open(os.path.join(root, "packaging", "build_standalone.py"),
+                     encoding="utf-8").read()
+        install = open(os.path.join(root, "packaging", "install-linux.sh"),
+                       encoding="utf-8").read()
+        iss = open(os.path.join(root, "packaging", "vanilla-extract.iss"),
+                   encoding="utf-8").read()
+        self.assertIn(f'"--name", "{command}"', build)
+        self.assertIn(f"$BINDIR/{command}", install)
+        self.assertIn(f'AppExeName "{command}.exe"', iss)
+
+    def test_birthtime_support_is_cached_per_filesystem(self):
+        """#10 -- one subprocess per file dominated a large scan."""
+        from vanilla_extract import fileinfo
+        self.assertTrue(hasattr(fileinfo, "_BIRTHTIME_SUPPORT"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

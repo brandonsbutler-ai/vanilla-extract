@@ -109,6 +109,9 @@ _MOUNTS = _mount_table()
 
 _FS_CACHE = {}
 
+# Filesystem type -> whether it records a birth time. One probe, then reused.
+_BIRTHTIME_SUPPORT = {}
+
 
 def filesystem_of(path):
     """Filesystem type for a path, or None when it cannot be determined.
@@ -138,15 +141,28 @@ def _birthtime(path, st):
         return st.st_birthtime, "st_birthtime"
     if SYSTEM == "Windows":
         return st.st_ctime, "st_ctime (creation on Windows)"
-    # Linux: os.stat cannot reach it. statx can, on filesystems that store it.
+    # Linux: os.stat cannot reach it, but statx can on filesystems that store
+    # it. That means a subprocess per file, which on a large corpus costs more
+    # than the rest of the scan put together -- so a filesystem that does not
+    # record birth times is asked once and then remembered.
+    #
+    # `--` matters: a file named `-x.pdf` reached by a relative walk would
+    # otherwise be parsed by GNU stat as options, and the failure was silent.
+    fstype = filesystem_of(path) or "?"
+    if _BIRTHTIME_SUPPORT.get(fstype) is False:
+        return None, f"not recorded by this filesystem ({fstype})"
     try:
-        out = subprocess.run(["stat", "--format=%W", path],
+        out = subprocess.run(["stat", "--format=%W", "--", path],
                              capture_output=True, timeout=5, text=True)
         raw = out.stdout.strip()
         if out.returncode == 0 and raw.isdigit() and int(raw) > 0:
+            _BIRTHTIME_SUPPORT[fstype] = True
             return int(raw), "statx birth time via stat(1)"
+        if out.returncode == 0 and raw in ("0", "-"):
+            _BIRTHTIME_SUPPORT[fstype] = False
+            return None, f"not recorded by this filesystem ({fstype})"
     except (OSError, subprocess.SubprocessError):
-        pass
+        _BIRTHTIME_SUPPORT[fstype] = False
     return None, "unavailable on this platform and filesystem"
 
 

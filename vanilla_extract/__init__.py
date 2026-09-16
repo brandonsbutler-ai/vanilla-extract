@@ -1,4 +1,4 @@
-"""vanilla -- pull plain text out of documents using only the Python standard library.
+"""vanilla-extract -- pull plain text out of documents using only the Python standard library.
 
     from vanilla_extract import extract_file
     text = extract_file("contract.pdf")

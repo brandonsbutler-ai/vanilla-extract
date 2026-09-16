@@ -1,4 +1,4 @@
-# vanilla -- Usage, Methods and Validation Results
+# vanilla-extract -- Usage, Methods and Validation Results
 
 Version 0.2.0 · verification run 2026-09-16 · MIT licensed
 
@@ -13,7 +13,7 @@ commands are at the end.
 
 ## 1. What it is
 
-vanilla_extract extracts text and named fields from documents, and produces a reviewable table from a
+vanilla-extract extracts text and named fields from documents, and produces a reviewable table from a
 folder of them. It reads PDF, DOCX, PPTX, XLSX, ODT, RTF, EML, MBOX, HTML, XML, CSV, TSV, JSON
 and plain text, plus ZIP archives containing any of those.
 
@@ -136,7 +136,7 @@ Three layers, because they catch different things.
 
 | Layer | What it is | What it catches |
 |---|---|---|
-| **Unit tests** (92) | `python3 -m unittest discover -s tests` | Logic errors in one function, and every past bug as a regression test |
+| **Unit tests** (100) | `python3 -m unittest discover -s tests` | Logic errors in one function, and every past bug as a regression test |
 | **Benchmark** | `python3 benchmark.py <dir>` | Extraction *quality*, scored against an independent implementation |
 | **End-to-end verification** (156 checks) | `python3 verify_e2e.py` | Whether the product does what its documentation says |
 
@@ -264,7 +264,7 @@ unbounded decompression path in the primary format; quadratic time and memory on
 one malformed character-map entry rendering an entire readable PDF undecodable; a field pattern
 that aborted a whole batch; a re-scan that overwrote its own audit trail; an archive that
 vanished without appearing in either output table; and a stray line in the test file that made
-running it directly execute 29 of 92 tests and exit zero.
+running it directly execute 29 of 100 tests and exit zero.
 
 **The end-to-end verifier then caught two more, including one in the documentation:**
 
@@ -308,7 +308,7 @@ Every one of those is now a named regression test.
 git clone https://github.com/brandonsbutler-ai/vanilla-extract
 cd vanilla_extract
 
-python3 -m unittest discover -s tests -v    # 92 unit tests
+python3 -m unittest discover -s tests -v    # 100 unit tests
 python3 verify_e2e.py                       # 156 end-to-end claim checks
 python3 benchmark.py /path/to/your/pdfs     # quality against pdftotext
 ```

@@ -32,7 +32,12 @@ def main():
     cmd = [
         "pyinstaller",
         "--onefile",
-        "--name", "vanilla_extract",
+        # The binary is `vanilla` everywhere else -- the pyproject console
+        # script, install-linux.sh, and the Inno Setup AppExeName. A blanket
+        # rename substituted this to the MODULE name, so the Linux installer
+        # silently fell back to the launcher and the Windows installer failed
+        # on a missing source file.
+        "--name", "vanilla",
         "--distpath", os.path.join(ROOT, "dist"),
         "--workpath", os.path.join(ROOT, "build"),
         "--specpath", os.path.join(ROOT, "build"),
@@ -45,7 +50,7 @@ def main():
     if result.returncode != 0:
         return result.returncode
 
-    name = "vanilla.exe" if platform.system() == "Windows" else "vanilla_extract"
+    name = "vanilla.exe" if platform.system() == "Windows" else "vanilla"
     built = os.path.join(ROOT, "dist", name)
     if not os.path.isfile(built):
         print(f"expected {built} but it was not produced", file=sys.stderr)

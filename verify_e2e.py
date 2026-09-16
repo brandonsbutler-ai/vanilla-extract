@@ -896,12 +896,48 @@ def verify_packaging_and_deps(workdir):
     check("no module imports anything outside the standard library",
           not offenders, offenders)
 
+    # Parsed and RESOLVED rather than string-matched. "dependencies = []"
+    # appearing in the file proves nothing about what the build backend will
+    # read, and an entry point that is spelled correctly can still point at a
+    # function that does not exist.
+    import importlib
+    import tomllib
+    from vanilla_extract import __version__
+    with open(os.path.join(ROOT, "pyproject.toml"), "rb") as fh:
+        cfg = tomllib.load(fh)
+    project_cfg = cfg.get("project", {})
     pyproject = open(os.path.join(ROOT, "pyproject.toml"), encoding="utf-8").read()
-    check("pyproject declares an empty runtime dependency list",
-          "dependencies = []" in pyproject)
-    check("pyproject exposes a console entry point named `vanilla`",
-          'vanilla = "vanilla_extract.__main__:main"' in pyproject,
-          [l.strip() for l in pyproject.splitlines() if "__main__:main" in l])
+
+    check("pyproject parses as valid TOML", bool(project_cfg))
+    check("declared runtime dependency list is empty",
+          project_cfg.get("dependencies") == [],
+          project_cfg.get("dependencies"))
+
+    scripts = project_cfg.get("scripts", {})
+    check("exactly one console entry point, named `vanilla`",
+          list(scripts) == ["vanilla"], scripts)
+    target = scripts.get("vanilla", "")
+    module_name, _, func_name = target.partition(":")
+    resolved = None
+    try:
+        resolved = getattr(importlib.import_module(module_name), func_name, None)
+    except ImportError as exc:
+        resolved = None
+        print(f"         import failed: {exc}")
+    check("the entry point resolves to a callable that actually exists",
+          callable(resolved), f"{target} -> {resolved!r}")
+
+    declared = set(cfg.get("tool", {}).get("setuptools", {}).get("packages", []))
+    on_disk = {d.replace(os.sep, ".") for d, _sub, files in os.walk(
+        os.path.join(ROOT, "vanilla_extract")) if "__init__.py" in files}
+    on_disk = {os.path.relpath(os.path.join(ROOT, d.replace(".", os.sep)), ROOT)
+               .replace(os.sep, ".") for d in on_disk}
+    check("every package on disk is declared in pyproject",
+          declared == on_disk, f"declared {sorted(declared)} vs disk {sorted(on_disk)}")
+
+    check("package version agrees with pyproject",
+          project_cfg.get("version") == __version__,
+          f"{project_cfg.get('version')} vs {__version__}")
     check("Linux install script present and executable",
           os.access(os.path.join(ROOT, "packaging", "install-linux.sh"), os.X_OK))
     check("Windows installer script present",
@@ -914,14 +950,29 @@ def verify_packaging_and_deps(workdir):
     env = dict(os.environ, PREFIX=prefix)
     r = subprocess.run([os.path.join(ROOT, "packaging", "install-linux.sh")],
                        cwd=ROOT, capture_output=True, text=True, env=env, timeout=120)
-    installed = os.path.join(prefix, "bin", "vanilla_extract")
+    # Derived from the declared console script, not hardcoded. The previous
+    # version named the binary independently, so when a blanket rename changed
+    # what the installer produced, this check changed with it and passed while
+    # every documented command was broken.
+    expected_cmd = next(iter(scripts), "vanilla")
+    installed = os.path.join(prefix, "bin", expected_cmd)
     check("install-linux.sh completes", r.returncode == 0, r.stderr[-200:])
-    check("installed launcher exists and is executable",
-          os.access(installed, os.X_OK))
+    check(f"the installer produces the declared command `{expected_cmd}`",
+          os.access(installed, os.X_OK),
+          sorted(os.listdir(os.path.join(prefix, "bin")))
+          if os.path.isdir(os.path.join(prefix, "bin")) else "no bin dir")
+    # The standalone build must agree with it too.
+    build_src = open(os.path.join(ROOT, "packaging", "build_standalone.py"),
+                     encoding="utf-8").read()
+    check("the standalone build names the binary the same way",
+          f'"--name", "{expected_cmd}"' in build_src)
+    iss = open(os.path.join(ROOT, "packaging", "vanilla-extract.iss"),
+               encoding="utf-8").read()
+    check("the Windows installer ships the same binary name",
+          f'AppExeName "{expected_cmd}.exe"' in iss)
     if os.access(installed, os.X_OK):
         r = subprocess.run([installed, "--version"], capture_output=True,
                            text=True, cwd="/tmp", timeout=60)
-        from vanilla_extract import __version__
         check("installed command runs from an unrelated directory and reports its version",
               r.returncode == 0 and __version__ in r.stdout, r.stdout.strip() or r.stderr[:160])
         check("installed version matches pyproject",
@@ -963,6 +1014,7 @@ def verify_unit_suite():
 def verify_documentation(workdir):
     section("CLAIM: the documentation states the numbers the tools actually produce")
     import re as _re
+    import tomllib
     readme = open(os.path.join(ROOT, "README.md"), encoding="utf-8").read()
     validation = open(os.path.join(ROOT, "VALIDATION.md"), encoding="utf-8").read()
 
@@ -988,11 +1040,13 @@ def verify_documentation(workdir):
               f"found {sorted(stated)}")
 
     # Version agreement across the three places it appears.
+    import tomllib
     from vanilla_extract import __version__
-    pyproject = open(os.path.join(ROOT, "pyproject.toml"), encoding="utf-8").read()
+    with open(os.path.join(ROOT, "pyproject.toml"), "rb") as fh:
+        declared_version = tomllib.load(fh).get("project", {}).get("version")
     check("version agrees between package, pyproject and VALIDATION",
-          f'version = "{__version__}"' in pyproject and __version__ in validation,
-          __version__)
+          declared_version == __version__ and __version__ in validation,
+          f"package {__version__}, pyproject {declared_version}")
 
     # The product name must not survive anywhere as the old one.
     # The old name is spelled here in pieces, because this file is the one doing
@@ -1013,18 +1067,55 @@ def verify_documentation(workdir):
     check("no references to the previous product name remain", not stale, stale)
 
     # Command name is consistent everywhere a user would copy it.
-    check("docs invoke the command as `vanilla`, matching the entry point",
-          "vanilla --batch" in readme and 'vanilla = "' in pyproject)
+    # Resolve the declared command rather than matching its spelling: the docs
+    # are only right if the command they tell a user to type is the one the
+    # package actually installs.
+    with open(os.path.join(ROOT, "pyproject.toml"), "rb") as fh:
+        declared_scripts = list(tomllib.load(fh).get("project", {})
+                                .get("scripts", {}))
+    documented = [c for c in declared_scripts if f"{c} --batch" in readme]
+    check("the command the docs tell you to type is the one that gets installed",
+          documented == declared_scripts,
+          f"declared {declared_scripts}, documented {documented}")
 
     # Benchmark figures quoted in the docs must match a live run.
-    b = subprocess.run([sys.executable, "benchmark.py", os.path.dirname(ROOT)],
+    #
+    # The corpus is named explicitly by VANILLA_CORPUS_A. It used to default to
+    # the repository's PARENT directory, which is a machine-specific working
+    # folder -- that is why the published figure moved from 209/209 to 210/210
+    # when an unrelated PDF landed next to the checkout. Documentation figures
+    # must not track the contents of whatever happens to sit beside the repo,
+    # and on any other machine the check silently did nothing at all, so the
+    # "self-verifying documentation" claim was unenforced everywhere but here.
+    corpus_a = os.environ.get("VANILLA_CORPUS_A")
+    if not corpus_a:
+        print("  (corpus A not specified; set VANILLA_CORPUS_A=<dir> to verify")
+        print("   the benchmark figures quoted in the documentation)")
+        check("documented benchmark figures are stated in a checkable form",
+              bool(_re.search(r">= 0\.99\s*:?\s*\d+/\d+", readme)),
+              "README must quote the >= 0.99 pair so it can be verified")
+        return
+    if not os.path.isdir(corpus_a):
+        check("VANILLA_CORPUS_A points at a real directory", False, corpus_a)
+        return
+    b = subprocess.run([sys.executable, "benchmark.py", corpus_a],
                        cwd=ROOT, capture_output=True, text=True, timeout=900)
     live = _re.search(r">= 0\.99 recall : (\d+)/(\d+)", b.stdout)
+    check("the benchmark produced a corpus-A figure to compare against",
+          live is not None, b.stdout[-200:] if not live else "")
     if live:
         pair = f"{live.group(1)}/{live.group(2)}"
+        total = live.group(2)
         for name, doc in (("README", readme), ("VALIDATION", validation)):
             check(f"{name} quotes the live corpus-A figure ({pair})",
                   pair in doc, f"live {pair}")
+            # The prose heading must agree with the code block beneath it --
+            # the pair-only check let "Corpus A -- 209 PDFs" stand over a
+            # block reporting 210/210.
+            heading = _re.search(r"Corpus A\s*(?:-+|\u2014|\u2013)\s*(\d+) tool-generated", doc)
+            check(f"{name} heading count matches the measured corpus ({total})",
+                  heading is not None and heading.group(1) == total,
+                  heading.group(1) if heading else "no heading found")
 
 
 def verify_performance(corpus):

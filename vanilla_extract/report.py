@@ -117,9 +117,16 @@ function csvCell(s){
   return /[",\\n]/.test(s) ? '"' + s.replace(/"/g,'""') + '"' : s;
 }
 document.getElementById('export')?.addEventListener('click',()=>{
-  const rows=[...document.querySelectorAll('#results tr')].map(tr=>
+  // The header must lead, or DictReader on the other side eats the first
+  // DOCUMENT as field names: that row vanishes from the revision, every key
+  // is wrong, and the diff reports the whole table as removed-and-re-added.
+  // #results is the tbody, so the header has to be gathered separately.
+  const head=[...document.querySelectorAll('#resultshead th')]
+    .filter(th=>!th.classList.contains('noexport'))
+    .map(th=>csvCell(th.dataset.col ?? th.textContent.trim())).join(',');
+  const rows=[head, ...[...document.querySelectorAll('#results tr')].map(tr=>
     [...tr.children].filter(c=>!c.classList.contains('noexport'))
-      .map(c=>csvCell(c.innerText.trim())).join(','));
+      .map(c=>csvCell(c.innerText.trim())).join(','))];
   const blob=new Blob([rows.join('\\n')],{type:'text/csv'});
   const a=document.createElement('a');
   a.href=URL.createObjectURL(blob);
@@ -167,7 +174,7 @@ def write_report(results, exceptions, path, columns=None, title="Extraction repo
              "text": (r.get("text", "") if include_text else "")}
             for r in results]
 
-    head = "".join(f"<th>{_esc(c)}</th>" for c in columns)
+    head = "".join(f'<th data-col="{_esc(c)}">{_esc(c)}</th>' for c in columns)
     body = []
     for i, row in enumerate(results):
         cells = []
@@ -202,7 +209,7 @@ def write_report(results, exceptions, path, columns=None, title="Extraction repo
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>{_esc(title)}</title><style>{_CSS}</style></head><body><div class="wrap">
 <h1>{_esc(title)}</h1>
-<div class="sub">Generated {stamp} by vanilla_extract. Edits stay in this file; nothing is uploaded.</div>
+<div class="sub">Generated {stamp} by vanilla-extract. Edits stay in this file; nothing is uploaded.</div>
 <div class="stats">
   <div class="stat"><b>{len(results)}</b><span>documents read</span></div>
   <div class="stat"><b>{len(exceptions)}</b><span>could not be read</span></div>
@@ -214,7 +221,7 @@ def write_report(results, exceptions, path, columns=None, title="Extraction repo
   <button class="primary" id="export">Export corrected CSV</button>
 </div>
 <h2>Extracted <span class="count">({len(results)})</span></h2>
-<div class="tablewrap"><table><thead><tr>{head}<th class="noexport"></th></tr></thead>
+<div class="tablewrap"><table><thead><tr id="resultshead">{head}<th class="noexport"></th></tr></thead>
 <tbody id="results">{"".join(body) or '<tr><td class="empty">No documents read.</td></tr>'}</tbody>
 </table></div>
 {exc_section}
@@ -324,19 +331,31 @@ def write_datasheet(rows, path, columns=None, title="File state datasheet"):
             cells.append(f'<td class="{cls}"{sort_attr}>{_esc(shown)}</td>')
         body.append("<tr>" + "".join(cells) + "</tr>")
 
-    unreliable = sum(1 for r in rows if r.get("ownership_reliable") is False)
-    no_created = sum(1 for r in rows if not r.get("created"))
+    # A ZIP member has no owner and no creation time BY FORMAT, which is a
+    # different fact from a mounted NTFS volume synthesising them. Counting
+    # both into one banner told the reader something false about where their
+    # documents live.
+    members = [r for r in rows if r.get("source") == "zip-central-directory"]
+    on_disk = [r for r in rows if r.get("source") != "zip-central-directory"]
+    unreliable = sum(1 for r in on_disk if r.get("ownership_reliable") is False)
+    no_created = sum(1 for r in on_disk if not r.get("created"))
     notes = []
+    if members:
+        notes.append(
+            f"<strong>{len(members)} of {len(rows)} entries</strong> were found "
+            f"inside ZIP archives. The archive format records no owner and no "
+            f"creation time, so those columns are empty for them by format "
+            f"rather than by any limitation of this machine.")
     if unreliable:
         notes.append(
-            f"<strong>{unreliable} of {len(rows)} files</strong> sit on a filesystem "
+            f"<strong>{unreliable} of {len(on_disk)} files on disk</strong> sit on a filesystem "
             f"that reports ownership and permissions from mount options rather than "
             f"from the files themselves (NTFS, exFAT, SMB and similar). Those "
             f"columns are marked <span class=\"flag\">not reliable</span> and should "
             f"not be read as the file's real attributes.")
     if no_created:
         notes.append(
-            f"<strong>{no_created} of {len(rows)} files</strong> have no creation "
+            f"<strong>{no_created} of {len(on_disk)} files on disk</strong> have no creation "
             f"time. Creation time is not universally available: Windows records it, "
             f"macOS and the BSDs expose it, and on Linux it exists only on some "
             f"filesystems. The <em>created source</em> column says where each value "

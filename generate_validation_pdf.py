@@ -265,7 +265,7 @@ def main():
 
     pdf.set_font("Helvetica", "B", 21)
     pdf.set_text_color(*INK)
-    pdf.cell(0, 9, "vanilla_extract", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 9, "vanilla-extract", new_x="LMARGIN", new_y="NEXT")
     pdf.set_font("Helvetica", "", 11.5)
     pdf.set_text_color(*ACCENT)
     pdf.cell(0, 6, "Usage, Methods and Validation Results",

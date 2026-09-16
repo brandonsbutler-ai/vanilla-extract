@@ -1,4 +1,6 @@
-r"""CLI: python3 -m vanilla_extract <path> [...]
+r"""CLI: `vanilla <path>` once installed, or `python3 -m vanilla_extract <path>`
+from a source checkout. Both forms are shown below as the module form, which
+works either way.
 
     python3 -m vanilla_extract report.pdf
     python3 -m vanilla_extract --json *.docx
