@@ -27,11 +27,18 @@ from . import fileinfo, recognize
 from .limits import ArchiveTooLarge, read_member
 from .formats.pdf import EncryptedPDF, UndecodableText
 
-# Extensions we do not attempt; listing them keeps the exceptions table
-# meaningful rather than full of images.
+# Media and binaries we do not attempt; listing them keeps the exceptions
+# table meaningful rather than full of images.
+#
+# ARCHIVE EXTENSIONS ARE DELIBERATELY ABSENT. A readable .zip is recursed by
+# _walk and never reaches here. An UNREADABLE one used to land in this list and
+# disappear -- no result row, no exception row -- because is_zipfile() said no
+# and the extension said skip. A corrupt archive is exactly the thing a caller
+# needs told about, so it now falls through to extraction and is reported as
+# an unsupported format instead.
 _SKIP_EXT = (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".svg", ".webp",
              ".mp3", ".mp4", ".mov", ".avi", ".wav", ".exe", ".dll", ".so",
-             ".dylib", ".woff", ".woff2", ".ttf", ".otf", ".zip", ".gz", ".tar")
+             ".dylib", ".woff", ".woff2", ".ttf", ".otf")
 
 
 class Field:

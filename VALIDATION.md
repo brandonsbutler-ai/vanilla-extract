@@ -193,8 +193,14 @@ Over 14 unencrypted PDFs of 5 MB and up:
 | Fastest | 179 |
 | Slowest measured (image-heavy, four runs) | 42 |
 
-So: **40 pages per second or better, typically around 100.** A file is read fully into memory, so
-peak usage tracks document size. One PDF content stream is inflated with a 64 MB ceiling.
+So: **40 pages per second or better, typically around 100, on an otherwise idle machine.**
+Throughput is wall-clock and measures the machine as much as the code -- the same files drop to
+28-35 pages/s at a load average of 4 -- so the verifier reports these numbers alongside the load
+average that produced them rather than asserting a floor that a busy server would fail for the
+wrong reason.
+
+A file is read fully into memory, so peak usage tracks document size. One PDF content stream is
+inflated with a 64 MB ceiling.
 
 ---
 

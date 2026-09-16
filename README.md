@@ -278,8 +278,16 @@ Measured on the commercial corpus, single-threaded, no tuning:
 Throughput over 14 unencrypted PDFs of 5 MB and up: **median 101 pages per second**, fastest 179.
 The slowest file measured is an image-heavy adventure module at **42 pages/s** over four runs.
 
-So the honest figure is **40 pages per second or better, typically around 100**, depending on how
-much is on the page. An earlier draft of this file claimed "50-70", which managed to both
+So the honest figure is **40 pages per second or better, typically around 100** -- **measured on
+an otherwise idle machine**, which is the caveat that matters. Throughput is wall-clock, so it
+measures the machine as much as the code: the same files that run at 42-76 pages/s idle drop to
+28-35 at a load average of 4.
+
+`verify_e2e.py` therefore **reports** throughput with the load average that produced it rather
+than asserting a floor. An earlier version did assert one, and the suite went red on a busy box --
+which says nothing about whether the product is correct, and a verification suite that cries wolf
+stops being read. Only a catastrophic regression is gated, at an order of magnitude below the idle
+figures, where no amount of ordinary load explains it. An earlier draft of this file claimed "50-70", which managed to both
 understate the typical case and overstate the floor -- the number now follows the measurement.
 
 A file is read fully into memory, so peak usage tracks document size; that is fine into the

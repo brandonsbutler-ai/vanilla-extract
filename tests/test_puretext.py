@@ -898,5 +898,34 @@ class TestDatasheet(unittest.TestCase):
         self.assertIn("modified", doc["state_when_found"])
 
 
+class TestCorruptArchiveRegression(unittest.TestCase):
+    """A corrupt archive fell between is_zipfile() and the skip list."""
+
+    def test_corrupt_zip_is_reported_not_silently_skipped(self):
+        import tempfile
+        from puretext.batch import run
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "good.txt"), "w", encoding="utf-8") as fh:
+                fh.write("Ref: OK-1")
+            with open(os.path.join(d, "corrupt.zip"), "wb") as fh:
+                fh.write(b"PK\x03\x04" + b"\x00" * 40 + b"garbage")
+            results, exceptions = run([d])
+        seen = {os.path.basename(r["file"].split("!")[0]) for r in results}
+        seen |= {os.path.basename(e["file"].split("!")[0]) for e in exceptions}
+        self.assertIn("corrupt.zip", seen)
+        self.assertEqual(len(results), 1)
+
+    def test_valid_zip_is_still_recursed_not_reported(self):
+        """The fix must not turn working archives into exceptions."""
+        import tempfile
+        from puretext.batch import run
+        with tempfile.TemporaryDirectory() as d:
+            with zipfile.ZipFile(os.path.join(d, "valid.zip"), "w") as zf:
+                zf.writestr("in.txt", "Ref: IN-1")
+            results, exceptions = run([d])
+        self.assertEqual(exceptions, [])
+        self.assertTrue(any("in.txt" in r["file"] for r in results))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
