@@ -25,12 +25,46 @@ from . import UnsupportedFormat, extract_archive, extract_file, __version__
 from .batch import Field, run as run_batch, write_csv
 from .recognize import infer_schema
 from .report import write_report
+from .provenance import Workspace, read_csv_rows
 
 
 def _emit_text(label, text, show_headers):
     if show_headers:
         print(f"===== {label} =====")
     print(text)
+
+
+def _run_workspace_op(args):
+    """--verify / --import-csv against an existing workspace."""
+    ws = Workspace(args.workspace)
+    if not ws.exists():
+        print(f"puretext: no workspace at {args.workspace}", file=sys.stderr)
+        return 2
+
+    if args.verify:
+        problems = ws.verify()
+        manifest = ws.load()
+        print(f"{len(manifest['documents'])} documents, "
+              f"{len(manifest['revisions'])} revisions")
+        if problems:
+            print("INTEGRITY FAILURES:", file=sys.stderr)
+            for p in problems:
+                print(f"  {p}", file=sys.stderr)
+            return 1
+        print("all artefacts match their recorded hashes")
+
+    if args.import_csv:
+        rows, columns = read_csv_rows(args.import_csv)
+        entry = ws.add_revision(rows, columns,
+                                note=f"imported from {os.path.basename(args.import_csv)}")
+        print(f"revision {entry['revision']}: {entry['rows']} rows, "
+              f"{entry['change_count']} cell(s) changed from the previous revision")
+        for change in entry["changes_from_previous"][:20]:
+            print(f"    {os.path.basename(str(change['file']))}: {change['column']}: "
+                  f"{change['from']!r} -> {change['to']!r}")
+        if entry["change_count"] > 20:
+            print(f"    ... and {entry['change_count'] - 20} more")
+    return 0
 
 
 def _run_batch(args):
@@ -40,6 +74,12 @@ def _run_batch(args):
     except (ValueError, re.error) as exc:
         print(f"puretext: {exc}", file=sys.stderr)
         return 2
+
+    ws = None
+    if args.workspace:
+        ws = Workspace(args.workspace)
+        if not ws.exists():
+            ws.create(__version__, args.paths)
 
     auto_labels = []
     if args.recognize:
@@ -61,7 +101,9 @@ def _run_batch(args):
     keep_text = (not args.no_text) or bool(args.report)
     results, exceptions = run_batch(args.paths, fields=fields,
                                     include_text=keep_text,
-                                    auto_labels=auto_labels)
+                                    auto_labels=auto_labels,
+                                    workspace=ws,
+                                    copy_originals=not args.no_copy_originals)
 
     columns = ["file", "characters"] + auto_labels + [f.name for f in fields]
     if args.report:
@@ -88,6 +130,12 @@ def _run_batch(args):
         for row in exceptions:
             print(f"  {row['file']}: {row['reason']}", file=sys.stderr)
 
+    if ws is not None:
+        entry = ws.add_revision(results, columns, note="as extracted")
+        print(f"workspace {args.workspace}: {len(results)} originals and "
+              f"extractions archived, revision {entry['revision']} written",
+              file=sys.stderr)
+
     # Exceptions are a reported result, not a failure of the run.
     return 0
 
@@ -97,7 +145,9 @@ def main(argv=None):
         prog="puretext",
         description="Extract plain text from documents using only the Python "
                     "standard library.")
-    parser.add_argument("paths", nargs="+", metavar="FILE")
+    # Optional, because --workspace --verify / --import-csv operate on an
+    # existing workspace and have no input files to name.
+    parser.add_argument("paths", nargs="*", metavar="FILE")
     parser.add_argument("--json", action="store_true",
                         help="emit one JSON object per file instead of text")
     parser.add_argument("--quiet", "-q", action="store_true",
@@ -121,11 +171,28 @@ def main(argv=None):
     parser.add_argument("--min-support", type=float, default=0.5, metavar="F",
                         help="with --recognize: fraction of documents a label must "
                              "appear in to become a column (default 0.5)")
+    parser.add_argument("--workspace", metavar="DIR",
+                        help="keep originals, extractions and every correction "
+                             "together in DIR, each hashed (SHA-256)")
+    parser.add_argument("--no-copy-originals", action="store_true",
+                        help="with --workspace: hash the originals but do not "
+                             "copy them (for corpora too large to duplicate)")
+    parser.add_argument("--import-csv", metavar="PATH",
+                        help="with --workspace: file a corrected table as a new "
+                             "revision, recording what it changed")
+    parser.add_argument("--verify", action="store_true",
+                        help="with --workspace: re-hash every artefact and "
+                             "report anything that changed since capture")
     parser.add_argument("--report", metavar="PATH",
                         help="with --batch: write a self-contained HTML report with "
                              "per-document preview, in-place editing and CSV re-export")
     args = parser.parse_args(argv)
 
+    if args.workspace and (args.import_csv or args.verify):
+        return _run_workspace_op(args)
+    if not args.paths:
+        parser.error("a FILE is required unless using --workspace with "
+                     "--verify or --import-csv")
     if args.batch:
         return _run_batch(args)
 

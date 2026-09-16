@@ -76,15 +76,18 @@ def _walk(paths, recurse_archives=True):
 
 
 def _load(label, source):
+    """Return (text, source_path, source_bytes) -- the extras let a workspace
+    archive the original alongside what was read from it."""
     if source is None:
-        return extract_file(label)
+        return extract_file(label), label, None
     archive, member = source
     with zipfile.ZipFile(archive) as zf:
         data = zf.read(member)
-    return extract(data, os.path.basename(member))
+    return extract(data, os.path.basename(member)), None, data
 
 
-def run(paths, fields=None, include_text=True, max_text=None, auto_labels=None):
+def run(paths, fields=None, include_text=True, max_text=None, auto_labels=None,
+        workspace=None, copy_originals=True):
     """Extract every document under `paths`.
 
     Returns (results, exceptions) as lists of dicts. Nothing raises: a failure
@@ -92,6 +95,9 @@ def run(paths, fields=None, include_text=True, max_text=None, auto_labels=None):
 
     `auto_labels` are labels discovered by recognize.infer_schema(); each
     becomes a column filled from the document's own label/value pairs.
+
+    `workspace` is a provenance.Workspace; when given, every document's
+    original and extracted text are archived with their hashes as they are read.
     """
     fields = fields or []
     auto_labels = auto_labels or []
@@ -101,7 +107,7 @@ def run(paths, fields=None, include_text=True, max_text=None, auto_labels=None):
         if label.lower().endswith(_SKIP_EXT):
             continue
         try:
-            text = _load(label, source)
+            text, src_path, src_bytes = _load(label, source)
         except EncryptedPDF as exc:
             exceptions.append({"file": label, "reason": "encrypted",
                                "detail": str(exc)})
@@ -131,6 +137,11 @@ def run(paths, fields=None, include_text=True, max_text=None, auto_labels=None):
                                          "no extractable text (often a scan "
                                          "with no text layer)"})
             continue
+
+        if workspace is not None:
+            workspace.capture(label, text, source_path=src_path,
+                              source_bytes=src_bytes,
+                              copy_original=copy_originals)
 
         row = {"file": label, "characters": len(text)}
         if auto_labels:

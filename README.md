@@ -163,13 +163,91 @@ PDF's indirect objects — including the ones packed inside compressed object st
 which is where PDF 1.5+ puts them — and resolving `12 0 R` references. Without this, every
 LibreOffice PDF returns control characters instead of words.
 
+## Install it
+
+**From source** -- nothing to resolve, because there is nothing to resolve:
+
+```bash
+pip install .            # gives you a `puretext` command
+```
+
+**Linux, without pip:**
+
+```bash
+./packaging/install-linux.sh                    # per-user, ~/.local/bin
+PREFIX=/usr/local sudo ./packaging/install-linux.sh
+```
+
+**A single executable, for machines with no Python at all:**
+
+```bash
+pip install pyinstaller
+python3 packaging/build_standalone.py           # -> dist/puretext(.exe)
+```
+
+**Windows installer:** build the executable as above, then `iscc packaging\puretext.iss`.
+It produces a per-user installer that needs no administrator rights and puts `puretext` on PATH --
+which matters, because the people who most need a dependency-free extractor are usually the same
+people who cannot install Python or pip on their work machine.
+
+PyInstaller and Inno Setup are *build-time* tools. Neither ships inside the application, and the
+runtime dependency list stays empty.
+
+## Keeping the original: workspaces
+
+Extraction deliverables get corrected by hand, and once corrected there is no way to tell which
+values came out of the document and which came out of a person. A workspace answers that:
+
+```bash
+puretext --batch invoices/ --recognize --workspace case01/ --report review.html --csv out.csv
+# ... client corrects values in review.html and exports corrected.csv ...
+puretext --workspace case01/ --import-csv corrected.csv
+puretext --workspace case01/ --verify
+```
+
+```
+case01/
+  manifest.json      run metadata and a SHA-256 for every artefact
+  originals/         the source documents as received
+  extracted/         what the tool read, per document, immutable
+  revisions/         each corrected table, appended, never replaced
+```
+
+Filing a correction prints exactly what moved:
+
+```
+revision 2: 4 rows, 2 cell(s) changed from the previous revision
+    INV-1001.txt: customer: 'Northwind Traders' -> 'Northwind Traders LLC'
+    INV-1002.txt: total: '$433.00' -> '$433.50'
+```
+
+`--verify` re-hashes every artefact and exits non-zero if anything changed since capture.
+
+**What the hashes do and do not prove:** SHA-256 establishes integrity and detects drift. It is
+not a signature, and a workspace is not tamper-proof against someone who can write to it. Said
+plainly so nobody assumes more of it than it does.
+
+## Performance
+
+Measured on the commercial corpus, single-threaded, no tuning:
+
+| Size | Pages | Time | Extracted |
+|---|---|---|---|
+| 68 MB | 321 | 6.1 s | 1,296,816 chars |
+| 42 MB | 338 | 4.4 s | 1,444,783 chars |
+| 31 MB | 261 | 2.9 s | 1,205,266 chars |
+| 83 MB | 578 | 0.03 s | encrypted -- refused immediately |
+
+Roughly 50-70 pages per second. A file is read fully into memory, so peak usage tracks the
+document size; that is fine for the hundreds-of-megabytes range and is the limit to know about.
+
 ## Tests
 
 ```bash
 python3 -m unittest discover -s tests -v
 ```
 
-51 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
+58 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
 there is nothing opaque in the repo. The suite covers the cases that actually break extractors:
 balanced parens inside PDF strings, escaped close-parens, octal escapes, odd hex nibbles,
 RTF `\fonttbl` contents leaking into output, cp1252 fallback, and misnamed files -- plus the

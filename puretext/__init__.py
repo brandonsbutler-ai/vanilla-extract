@@ -17,7 +17,7 @@ import zipfile
 
 from .dispatch import UnsupportedFormat, extract, sniff
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __all__ = ["extract", "extract_file", "extract_archive", "sniff",
            "UnsupportedFormat", "__version__"]
 

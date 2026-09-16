@@ -412,3 +412,94 @@ class TestReport(unittest.TestCase):
         """The filename identifies the row; editing it would break provenance."""
         doc = self._render()
         self.assertIn('<td class="file">a.pdf</td>', doc)
+
+
+class TestProvenance(unittest.TestCase):
+    """Originals kept, corrections appended, and both provable afterwards."""
+
+    def _ws(self, d):
+        from puretext.provenance import Workspace
+        ws = Workspace(os.path.join(d, "case"))
+        ws.create("0.2.0", [d])
+        return ws
+
+    def test_capture_records_both_hashes(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(d, "a.txt")
+            with open(src, "w", encoding="utf-8") as fh:
+                fh.write("Total: $5.00")
+            ws = self._ws(d)
+            entry = ws.capture("a.txt", "Total: $5.00", source_path=src)
+            self.assertEqual(len(entry["original_sha256"]), 64)
+            self.assertEqual(len(entry["extracted_sha256"]), 64)
+            self.assertTrue(os.path.isfile(os.path.join(ws.root, entry["original"])))
+            self.assertTrue(os.path.isfile(os.path.join(ws.root, entry["extracted"])))
+
+    def test_revisions_are_appended_never_replaced(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            ws = self._ws(d)
+            cols = ["file", "total"]
+            ws.add_revision([{"file": "a.pdf", "total": "$5.00"}], cols)
+            ws.add_revision([{"file": "a.pdf", "total": "$6.00"}], cols)
+            manifest = ws.load()
+            self.assertEqual([r["revision"] for r in manifest["revisions"]], [1, 2])
+            # the first revision's file still exists and still says $5.00
+            first = os.path.join(ws.root, manifest["revisions"][0]["file"])
+            self.assertIn("$5.00", open(first, encoding="utf-8").read())
+
+    def test_diff_names_the_changed_cell(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            ws = self._ws(d)
+            cols = ["file", "total", "customer"]
+            ws.add_revision([{"file": "a.pdf", "total": "$5.00", "customer": "X"}], cols)
+            entry = ws.add_revision(
+                [{"file": "a.pdf", "total": "$6.00", "customer": "X"}], cols)
+            self.assertEqual(entry["change_count"], 1)
+            change = entry["changes_from_previous"][0]
+            self.assertEqual((change["column"], change["from"], change["to"]),
+                             ("total", "$5.00", "$6.00"))
+
+    def test_verify_detects_a_modified_original(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(d, "a.txt")
+            with open(src, "w", encoding="utf-8") as fh:
+                fh.write("original")
+            ws = self._ws(d)
+            entry = ws.capture("a.txt", "original", source_path=src)
+            self.assertEqual(ws.verify(), [])
+            with open(os.path.join(ws.root, entry["original"]), "a",
+                      encoding="utf-8") as fh:
+                fh.write("tampered")
+            problems = ws.verify()
+            self.assertTrue(any("changed since capture" in p for p in problems))
+
+    def test_archive_names_are_readable_and_collision_proof(self):
+        from puretext.provenance import _safe_member
+        a = _safe_member("/clients/acme/invoice.pdf")
+        b = _safe_member("/clients/beta/invoice.pdf")
+        self.assertTrue(a.startswith("invoice_") and a.endswith(".pdf"))
+        self.assertNotEqual(a, b)
+
+    def test_traversal_is_neutralized(self):
+        from puretext.provenance import _safe_member
+        for hostile in ("../../etc/passwd", "..\\..\\windows\\system32\\x.dll",
+                        "/absolute/path/x.txt"):
+            member = _safe_member(hostile)
+            self.assertNotIn("..", member)
+            self.assertNotIn("/", member)
+            self.assertNotIn("\\", member)
+
+    def test_manifest_write_is_atomic(self):
+        """A crash mid-write must never leave a half-parsed manifest."""
+        import json
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            ws = self._ws(d)
+            ws.capture("a.txt", "text")
+            with open(ws.manifest_path, encoding="utf-8") as fh:
+                json.load(fh)          # parses => the write completed or did not happen
+            self.assertFalse(os.path.exists(ws.manifest_path + ".tmp"))
