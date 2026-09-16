@@ -269,6 +269,13 @@ Limits are generous on purpose -- a real 300-page report is large and legitimate
 refuse the absurd, not the merely big: a 20,000-paragraph document at a 29:1 ratio still extracts
 in 0.02 s.
 
+## For a customer or a reviewer
+
+[**VALIDATION.md**](VALIDATION.md) is the single document to read: what the tool does, how it is
+checked, what the checks measured, the defects they found, and a section on what the numbers do
+**not** prove. `python3 generate_validation_pdf.py` renders it to a PDF for anyone who would
+rather have one.
+
 ## Verification
 
 Two layers, both runnable:
