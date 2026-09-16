@@ -321,13 +321,36 @@ checked, what the checks measured, the defects they found, and a section on what
 **not** prove. `python3 generate_validation_pdf.py` renders it to a PDF for anyone who would
 rather have one.
 
+## Options
+
+Every option the command accepts. `--help` prints the same list.
+
+| Option | What it does |
+|---|---|
+| `--json` | emit one JSON object per file instead of text |
+| `--quiet, -q` | omit the ===== filename ===== banners |
+| `--version` | show program's version number and exit |
+| `--batch` | walk the given paths and emit a table instead of text |
+| `--csv PATH` | with --batch: write results here (default: stdout summary) |
+| `--exceptions PATH` | with --batch: write the unreadable-files table here |
+| `--field NAME=REGEX` | with --batch: pull a named value out of each document (repeatable). The first capture group wins if present. |
+| `--no-text` | with --batch: omit the full text column |
+| `--recognize` | with --batch: discover the fields from the documents themselves instead of being given regexes |
+| `--min-support F` | with --recognize: fraction of documents a label must appear in to become a column (default 0.5) |
+| `--workspace DIR` | keep originals, extractions and every correction together in DIR, each hashed (SHA-256) |
+| `--no-copy-originals` | with --workspace: hash the originals but do not copy them (for corpora too large to duplicate) |
+| `--import-csv PATH` | with --workspace: file a corrected table as a new revision, recording what it changed |
+| `--verify` | with --workspace: re-hash every artefact and report anything that changed since capture |
+| `--datasheet PATH` | with --batch: write a searchable table of each file's state as found -- size, timestamps, permissions, owner, links, filesystem (CSV, or .html for a searchable page) |
+| `--report PATH` | with --batch: write a self-contained HTML report with per-document preview, in-place editing and CSV re- export |
+
 ## Verification
 
 Two layers, both runnable:
 
 ```bash
 python3 -m unittest discover -s tests -v     # 100 unit tests
-python3 verify_e2e.py                        # 156 end-to-end claim checks
+python3 verify_e2e.py                        # 174 end-to-end claim checks
 ```
 
 `verify_e2e.py` exists because unit tests check units, not promises. It generates a fresh corpus

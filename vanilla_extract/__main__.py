@@ -168,7 +168,14 @@ def _run_batch(args):
     return 0
 
 
-def main(argv=None):
+def build_parser():
+    """The argument parser, as a value.
+
+    Separate from main() so a test can read the real options rather
+    than scrape --help: six flags once shipped documented nowhere but
+    the help text, and scraping would not have caught it either.
+    """
+
     parser = argparse.ArgumentParser(
         prog="vanilla",
         description="Extract plain text from documents using only the Python "
@@ -219,6 +226,12 @@ def main(argv=None):
     parser.add_argument("--report", metavar="PATH",
                         help="with --batch: write a self-contained HTML report with "
                              "per-document preview, in-place editing and CSV re-export")
+    
+    return parser
+
+
+def main(argv=None):
+    parser = build_parser()
     args = parser.parse_args(argv)
 
     if args.workspace and (args.import_csv or args.verify):

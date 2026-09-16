@@ -31,6 +31,10 @@ sys.path.insert(0, ROOT)
 
 PASS, FAIL = [], []
 
+# Documented end-to-end check counts, filled in by verify_documentation and
+# settled in main() once the real total is known.
+STATED_CHECK_COUNTS = {}
+
 # The corpus is randomized so a claim cannot pass by fitting one fixed set of
 # fixtures. The seed is printed, and honoured from the environment, so any
 # failure is reproducible: VANILLA_E2E_SEED=12345 python3 verify_e2e.py
@@ -1029,15 +1033,43 @@ def verify_documentation(workdir):
               stated == {units} or (stated and stated <= {units}),
               f"states {sorted(stated)}, actual {units}")
 
-    # Every claim check in this file, counted from the source rather than guessed.
-    self_src = open(os.path.join(ROOT, "verify_e2e.py"), encoding="utf-8").read()
+    # The end-to-end check count the documentation quotes.
+    #
+    # This asserted only that A NUMBER WAS PRESENT, which is no assertion at
+    # all: the README could say 99,999 checks and this file still printed ALL
+    # CLAIMS VERIFIED. It did -- the docs said 156 while 170 ran, through a
+    # rename and two review rounds, in the one document whose selling point is
+    # that it verifies itself. The real total is not known until every check
+    # has run, so the comparison is recorded here and settled in main().
     for name, doc in (("README", readme), ("VALIDATION", validation)):
+        # Every number the document attaches to the word "check", whatever the
+        # phrasing around it. Matching two fixed phrasings left a third --
+        # "156 passing checks means the documented claims hold" -- drifting
+        # freely in the same file, corrected only because a human read the line.
         stated = set(int(x) for x in
-                     _re.findall(r"(\d+) end-to-end claim checks", doc))
-        stated |= set(int(x) for x in
-                      _re.findall(r"\*\*End-to-end verification\*\* \((\d+) checks\)", doc))
-        check(f"{name} states an end-to-end check count at all", bool(stated),
+                     _re.findall(r"(\d+)(?:\s+[\w-]+){0,3}\s+checks?\b", doc))
+        check(f"{name} states an end-to-end check count", bool(stated),
               f"found {sorted(stated)}")
+        STATED_CHECK_COUNTS[name] = stated
+
+    # Every option the parser accepts must appear in the README. Six real flags
+    # -- --min-support, --no-copy-originals, --no-text, --quiet, --max-files and
+    # --no-history -- shipped documented nowhere but `--help`, among them the one
+    # that tunes field discovery and the one that stops originals being copied.
+    # The parser object is read, not the help text: a flag cannot be added now
+    # without either documenting it or failing this check.
+    from vanilla_extract.__main__ import build_parser
+    flags = {o for a in build_parser()._actions for o in a.option_strings
+             if o.startswith("--") and o != "--help"}
+    undocumented = sorted(f for f in flags if f not in readme)
+    check(f"every command-line option appears in the README ({len(flags)})",
+          not undocumented, undocumented)
+
+    # An option with no help text is undocumented wherever else it appears.
+    nohelp = sorted(a.option_strings[0] for a in build_parser()._actions
+                    if a.option_strings and not a.help
+                    and a.option_strings[0] != "--help")
+    check("every option has help text", not nohelp, nohelp)
 
     # Version agreement across the three places it appears.
     import tomllib
@@ -1216,6 +1248,16 @@ def main():
         verify_unit_suite()
         verify_documentation(workdir)
         verify_performance(corpus)
+
+    # Settled last, because the total is only known once everything has run.
+    # Counting this check itself: it is one of the checks, so the figure the
+    # documentation quotes is the figure this run prints.
+    section("CLAIM: the documentation quotes the real number of checks")
+    real_total = len(PASS) + len(FAIL) + len(STATED_CHECK_COUNTS)
+    for name, stated in sorted(STATED_CHECK_COUNTS.items()):
+        check(f"{name} quotes the real check count ({real_total})",
+              stated == {real_total},
+              f"{name} says {sorted(stated)}, this run has {real_total}")
 
     section("RESULT")
     total = len(PASS) + len(FAIL)
