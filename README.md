@@ -238,8 +238,16 @@ Measured on the commercial corpus, single-threaded, no tuning:
 | 31 MB | 261 | 2.9 s | 1,205,266 chars |
 | 83 MB | 578 | 0.03 s | encrypted -- refused immediately |
 
-Roughly 50-70 pages per second. A file is read fully into memory, so peak usage tracks the
-document size; that is fine for the hundreds-of-megabytes range and is the limit to know about.
+Throughput over 14 unencrypted PDFs of 5 MB and up: **median 101 pages per second**, fastest 179.
+The slowest file measured is an image-heavy adventure module at **42 pages/s** over four runs.
+
+So the honest figure is **40 pages per second or better, typically around 100**, depending on how
+much is on the page. An earlier draft of this file claimed "50-70", which managed to both
+understate the typical case and overstate the floor -- the number now follows the measurement.
+
+A file is read fully into memory, so peak usage tracks document size; that is fine into the
+hundreds of megabytes and is the limit to know about. One PDF content stream is inflated with a
+64 MB ceiling, and peak memory runs to roughly twice that during processing.
 
 ## Hostile input
 
@@ -260,6 +268,25 @@ These were tested, not assumed:
 Limits are generous on purpose -- a real 300-page report is large and legitimate. The point is to
 refuse the absurd, not the merely big: a 20,000-paragraph document at a 29:1 ratio still extracts
 in 0.02 s.
+
+## Verification
+
+Two layers, both runnable:
+
+```bash
+python3 -m unittest discover -s tests -v     # 79 unit tests
+python3 verify_e2e.py                        # 95 end-to-end claim checks
+```
+
+`verify_e2e.py` exists because unit tests check units, not promises. It generates a fresh corpus
+in every advertised format -- none of it reused from development -- drives the real CLI as a user
+would, and asserts each claim in this README against actual output. It prints PASS or FAIL per
+claim with the evidence, and exits non-zero on any failure, so it is able to say the product does
+not work. That is the only reason it is worth running.
+
+It has already done so twice. It caught a stated throughput of "50-70 pages/second" that one
+image-heavy file missed at 42, and it caught an over-strict check of its own. The performance
+figures here are whatever it last measured, not what would read best.
 
 ## Tests
 
