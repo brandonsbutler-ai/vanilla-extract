@@ -16,10 +16,11 @@ import os
 import zipfile
 
 from .dispatch import UnsupportedFormat, extract, sniff
+from .limits import ArchiveTooLarge, Budget, read_member
 
 __version__ = "0.2.0"
 __all__ = ["extract", "extract_file", "extract_archive", "sniff",
-           "UnsupportedFormat", "__version__"]
+           "UnsupportedFormat", "ArchiveTooLarge", "__version__"]
 
 # Skip these inside archives rather than trying to sniff them.
 _BINARY_EXT = (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".svg",
@@ -43,6 +44,7 @@ def extract_archive(path, max_members=500):
     `max_members` is a guard, not a limit on ambition: a zip bomb with a
     million entries should not hang the caller.
     """
+    budget = Budget()
     with zipfile.ZipFile(path) as zf:
         for i, info in enumerate(zf.infolist()):
             if i >= max_members:
@@ -55,7 +57,10 @@ def extract_archive(path, max_members=500):
             if name.lower().endswith(_BINARY_EXT):
                 continue
             try:
-                data = zf.read(info)
+                data = read_member(zf, info, budget)
+            except ArchiveTooLarge as exc:
+                yield (name, None, str(exc))
+                continue
             except (zipfile.BadZipFile, RuntimeError) as exc:
                 yield (name, None, f"unreadable: {exc}")
                 continue

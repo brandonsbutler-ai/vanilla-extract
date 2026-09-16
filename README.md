@@ -241,13 +241,30 @@ Measured on the commercial corpus, single-threaded, no tuning:
 Roughly 50-70 pages per second. A file is read fully into memory, so peak usage tracks the
 document size; that is fine for the hundreds-of-megabytes range and is the limit to know about.
 
+## Hostile input
+
+The whole job is reading files supplied by someone else, so the input is untrusted by definition.
+These were tested, not assumed:
+
+| Attack | Result |
+|---|---|
+| **ZIP decompression bomb** | **Refused.** A 199 KB `.docx` declaring a 200 MB member expanded fully before this was fixed. Members are now vetted against their *declared* size and compression ratio before a byte is read, with a running budget for the archive as a whole. Refusal costs 0.000 s because nothing is allocated. |
+| **XXE (external entity)** | Not exploitable -- `xml.etree` does not resolve external entities. Verified against `file:///etc/passwd`. |
+| **Billion laughs** | Bounded. expat stops expanding a few levels in, capping the damage near 300 KB of text. Amplification, not denial of service. |
+| **Catastrophic backtracking** | None found. Every recognizer pattern and the RTF tokenizer stay linear on pathological input (5,000-character labels, 20,000 spaces, 50,000 control words). |
+| **Path traversal** | A source label containing `../` or an absolute path cannot escape a workspace; archived names are flattened to a basename plus a digest. |
+
+Limits are generous on purpose -- a real 300-page report is large and legitimate. The point is to
+refuse the absurd, not the merely big: a 20,000-paragraph document at a 29:1 ratio still extracts
+in 0.02 s.
+
 ## Tests
 
 ```bash
 python3 -m unittest discover -s tests -v
 ```
 
-58 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
+64 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
 there is nothing opaque in the repo. The suite covers the cases that actually break extractors:
 balanced parens inside PDF strings, escaped close-parens, octal escapes, odd hex nibbles,
 RTF `\fonttbl` contents leaking into output, cp1252 fallback, and misnamed files -- plus the

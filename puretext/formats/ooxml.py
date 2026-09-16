@@ -11,6 +11,8 @@ import re
 import zipfile
 import xml.etree.ElementTree as ET
 
+from ..limits import Budget, read_member
+
 # OOXML namespaces. Rather than register these and write qualified tag names,
 # we match on the local part of the tag -- files in the wild disagree about
 # prefixes far more often than they disagree about local names.
@@ -67,6 +69,7 @@ def extract_docx(data):
     "the text of this document".
     """
     lines = []
+    budget = Budget()
     with zipfile.ZipFile(_as_zip(data)) as zf:
         names = set(zf.namelist())
         ordered = ["word/document.xml"]
@@ -76,7 +79,7 @@ def extract_docx(data):
             if name not in names:
                 continue
             try:
-                root = ET.fromstring(zf.read(name))
+                root = ET.fromstring(read_member(zf, zf.getinfo(name), budget))
             except ET.ParseError:
                 continue
             lines.extend(_paragraphs(root))
@@ -96,12 +99,13 @@ def extract_pptx(data):
     which slide a line came from.
     """
     chunks = []
+    budget = Budget()
     with zipfile.ZipFile(_as_zip(data)) as zf:
         slides = [n for n in zf.namelist()
                   if re.fullmatch(r"ppt/slides/slide\d+\.xml", n)]
         for name in sorted(slides, key=_slide_sort_key):
             try:
-                root = ET.fromstring(zf.read(name))
+                root = ET.fromstring(read_member(zf, zf.getinfo(name), budget))
             except ET.ParseError:
                 continue
             paras = _paragraphs(root)
@@ -111,10 +115,10 @@ def extract_pptx(data):
     return "\n".join(chunks)
 
 
-def _shared_strings(zf):
+def _shared_strings(zf, budget=None):
     """xlsx stores repeated cell text once, in sharedStrings.xml, by index."""
     try:
-        raw = zf.read("xl/sharedStrings.xml")
+        raw = read_member(zf, zf.getinfo("xl/sharedStrings.xml"), budget)
     except KeyError:
         return []
     try:
@@ -135,13 +139,14 @@ def extract_xlsx(data):
     than a literal; resolving that is the whole trick to reading xlsx.
     """
     rows_out = []
+    budget = Budget()
     with zipfile.ZipFile(_as_zip(data)) as zf:
-        shared = _shared_strings(zf)
+        shared = _shared_strings(zf, budget)
         sheets = [n for n in zf.namelist()
                   if re.fullmatch(r"xl/worksheets/sheet\d+\.xml", n)]
         for name in sorted(sheets, key=_slide_sort_key):
             try:
-                root = ET.fromstring(zf.read(name))
+                root = ET.fromstring(read_member(zf, zf.getinfo(name), budget))
             except ET.ParseError:
                 continue
             for node in root.iter():
@@ -170,9 +175,10 @@ def extract_xlsx(data):
 
 def extract_odt(data):
     """OpenDocument text. Different namespace, same shape as docx."""
+    budget = Budget()
     with zipfile.ZipFile(_as_zip(data)) as zf:
         try:
-            root = ET.fromstring(zf.read("content.xml"))
+            root = ET.fromstring(read_member(zf, zf.getinfo("content.xml"), budget))
         except (KeyError, ET.ParseError):
             return ""
     lines = []

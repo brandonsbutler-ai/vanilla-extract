@@ -24,6 +24,7 @@ import zipfile
 
 from . import UnsupportedFormat, extract, extract_file
 from . import recognize
+from .limits import ArchiveTooLarge, read_member
 from .formats.pdf import EncryptedPDF, UndecodableText
 
 # Extensions we do not attempt; listing them keeps the exceptions table
@@ -82,7 +83,7 @@ def _load(label, source):
         return extract_file(label), label, None
     archive, member = source
     with zipfile.ZipFile(archive) as zf:
-        data = zf.read(member)
+        data = read_member(zf, zf.getinfo(member))
     return extract(data, os.path.basename(member)), None, data
 
 
@@ -118,6 +119,10 @@ def run(paths, fields=None, include_text=True, max_text=None, auto_labels=None,
             continue
         except UnsupportedFormat as exc:
             exceptions.append({"file": label, "reason": "unsupported_format",
+                               "detail": str(exc)})
+            continue
+        except ArchiveTooLarge as exc:
+            exceptions.append({"file": label, "reason": "archive_bomb",
                                "detail": str(exc)})
             continue
         except (OSError, zipfile.BadZipFile) as exc:

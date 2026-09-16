@@ -503,3 +503,83 @@ class TestProvenance(unittest.TestCase):
             with open(ws.manifest_path, encoding="utf-8") as fh:
                 json.load(fh)          # parses => the write completed or did not happen
             self.assertFalse(os.path.exists(ws.manifest_path + ".tmp"))
+
+
+class TestHostileInput(unittest.TestCase):
+    """This library reads files supplied by strangers. These are the attacks."""
+
+    def _zip(self, name, payload):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("[Content_Types].xml", "<Types/>")
+            zf.writestr(name, payload)
+        return buf.getvalue()
+
+    def test_decompression_bomb_is_refused_before_allocating(self):
+        from puretext.limits import ArchiveTooLarge
+        bomb = self._zip("word/document.xml", b"A" * (200 * 1024 * 1024))
+        with self.assertRaises(ArchiveTooLarge):
+            extract(bomb, "bomb.docx")
+
+    def test_a_genuinely_large_document_still_works(self):
+        """The limit must refuse the absurd, not the merely big."""
+        body = "".join(f"<w:p><w:r><w:t>Paragraph {i} of ordinary text.</w:t>"
+                       f"</w:r></w:p>" for i in range(20000))
+        xml = ('<?xml version="1.0"?><w:document xmlns:w="http://schemas.'
+               'openxmlformats.org/wordprocessingml/2006/main"><w:body>'
+               + body + "</w:body></w:document>")
+        out = extract(self._zip("word/document.xml", xml), "big.docx")
+        self.assertGreater(len(out), 500000)
+
+    def test_archive_budget_stops_many_medium_members(self):
+        """Members that are individually fine must not add up without limit."""
+        from puretext.limits import ArchiveTooLarge, Budget, check_member
+
+        class FakeInfo:
+            filename = "x"
+            file_size = 200 * 1024 * 1024
+            compress_size = 100 * 1024 * 1024
+
+        budget = Budget()
+        for _ in range(5):
+            check_member(FakeInfo(), budget)
+        with self.assertRaises(ArchiveTooLarge):
+            for _ in range(5):
+                check_member(FakeInfo(), budget)
+
+    def test_xxe_external_entity_is_not_resolved(self):
+        """A document must not be able to read a file off the host."""
+        xxe = (b'<?xml version="1.0"?>\n'
+               b'<!DOCTYPE d [<!ENTITY x SYSTEM "file:///etc/passwd">]>\n'
+               b"<d>&x;</d>")
+        try:
+            out = extract(xxe, "x.xml")
+        except Exception:
+            return          # refusing outright is also a correct outcome
+        self.assertNotIn("root:", out)
+
+    def test_entity_expansion_stays_bounded(self):
+        """Billion laughs: expat caps expansion, so this documents the ceiling."""
+        ents = ['<!ENTITY lol "lol">']
+        for i in range(1, 8):
+            prev = "lol" if i == 1 else f"lol{i-1}"
+            ents.append(f'<!ENTITY lol{i} "{("&" + prev + ";") * 10}">')
+        bomb = ('<?xml version="1.0"?>\n<!DOCTYPE lolz [\n' + "\n".join(ents)
+                + "\n]>\n<root>&lol7;</root>").encode()
+        try:
+            out = extract(bomb, "b.xml")
+        except Exception:
+            return
+        self.assertLess(len(out), 5 * 1024 * 1024)
+
+    def test_no_catastrophic_backtracking_in_recognizers(self):
+        import time
+        from puretext.recognize import DETECTORS, label_values
+        hostile = [("A" * 5000) + ": v", "L" + (" " * 20000) + "v",
+                   "$" + ("1," * 4000) + "00", ("AB-" * 4000) + "1"]
+        start = time.time()
+        for text in hostile:
+            label_values(text)
+            for _, regex in DETECTORS:
+                regex.search(text)
+        self.assertLess(time.time() - start, 5.0)
