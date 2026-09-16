@@ -129,8 +129,14 @@ class Workspace:
 
     # -- capture -----------------------------------------------------------
     def capture(self, label, text, source_path=None, source_bytes=None,
-                copy_original=True):
-        """Record one document: its original, what was read, and both hashes."""
+                copy_original=True, file_state=None):
+        """Record one document: its original, what was read, and both hashes.
+
+        `file_state` is the filesystem state as found (fileinfo.stat_record).
+        Content hashes prove the bytes; this records the circumstances -- who
+        owned it, when it was last modified, what the permissions were. Both
+        halves are needed to answer "what was this file when it arrived".
+        """
         manifest = self.load()
 
         # Hash the content BEFORE choosing a filename. Naming by label alone
@@ -177,6 +183,7 @@ class Workspace:
             "extracted_sha256": sha256_bytes(payload),
             "characters": len(text),
             "captured": _utc(),
+            "state_when_found": file_state,
         }
         manifest["documents"].append(entry)
         self._write(manifest)

@@ -727,5 +727,176 @@ def strip_html_bytes(data):
 
 
 
+class TestFileInfo(unittest.TestCase):
+    """File state as found -- the chain-of-custody half of provenance."""
+
+    def test_records_the_fields_a_datasheet_needs(self):
+        import tempfile
+        from puretext.fileinfo import stat_record
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "a.txt")
+            with open(p, "w", encoding="utf-8") as fh:
+                fh.write("hello")
+            r = stat_record(p)
+        for field in ("name", "extension", "size", "size_bytes", "modified",
+                      "accessed", "permissions", "mode_octal", "owner_uid",
+                      "is_symlink", "hard_links", "inode", "filesystem",
+                      "captured_at", "captured_on"):
+            self.assertIn(field, r, field)
+        self.assertEqual(r["size_bytes"], 5)
+        self.assertEqual(r["extension"], "txt")
+        self.assertTrue(r["permissions"].startswith("-"))
+
+    def test_creation_time_is_never_faked_from_ctime(self):
+        """ctime is inode-change time on Linux. Substituting it would be a lie."""
+        import tempfile
+        from puretext.fileinfo import stat_record
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "a.txt")
+            with open(p, "w", encoding="utf-8") as fh:
+                fh.write("x")
+            r = stat_record(p)
+        # Either a real creation time with a stated source, or empty with a reason.
+        self.assertTrue(r["created_source"])
+        if r["created"] is None:
+            self.assertIn("unavailable", r["created_source"])
+        else:
+            self.assertNotIn("inode", r["created_source"])
+        self.assertIn("inode_changed", r)      # reported separately, correctly named
+
+    def test_synthetic_ownership_is_flagged_not_asserted(self):
+        """An NTFS/exFAT mount reports mount options, not file attributes."""
+        from puretext import fileinfo
+        real = fileinfo.filesystem_of
+        try:
+            fileinfo.filesystem_of = lambda p: "fuseblk"
+            fileinfo._FS_CACHE.clear()
+            import tempfile
+            with tempfile.TemporaryDirectory() as d:
+                p = os.path.join(d, "a.txt")
+                with open(p, "w", encoding="utf-8") as fh:
+                    fh.write("x")
+                r = fileinfo.stat_record(p)
+            self.assertFalse(r["ownership_reliable"])
+            if r["owner"]:
+                self.assertIn("mount options", r["owner"])
+        finally:
+            fileinfo.filesystem_of = real
+            fileinfo._FS_CACHE.clear()
+
+    def test_autofs_never_shadows_the_real_filesystem(self):
+        """Two mounts can claim one path; the later real one is the answer."""
+        from puretext import fileinfo
+        table = fileinfo._mount_table()
+        points = [m for m, _ in table]
+        self.assertEqual(len(points), len(set(points)), "duplicate mount points")
+        self.assertNotIn("autofs", [f for m, f in table
+                                    if m == "/mnt/volume"])
+
+    def test_symlink_is_reported_with_its_target(self):
+        import tempfile
+        from puretext.fileinfo import stat_record
+        with tempfile.TemporaryDirectory() as d:
+            target = os.path.join(d, "real.txt")
+            with open(target, "w", encoding="utf-8") as fh:
+                fh.write("x")
+            link = os.path.join(d, "link.txt")
+            try:
+                os.symlink(target, link)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlinks unavailable")
+            r = stat_record(link)
+        self.assertTrue(r["is_symlink"])
+        self.assertEqual(r["symlink_target"], target)
+
+    def test_zip_member_metadata_comes_from_the_entry(self):
+        """A member's timestamp can predate the archive by years."""
+        import tempfile
+        from puretext.fileinfo import zip_member_record
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "a.zip")
+            with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
+                info = zipfile.ZipInfo("old/doc.txt", date_time=(2011, 3, 4, 5, 6, 7))
+                info.external_attr = 0o644 << 16
+                zf.writestr(info, "content here")
+                got = zf.getinfo("old/doc.txt")
+                r = zip_member_record(got, path)
+        self.assertTrue(r["modified"].startswith("2011-03-04"))
+        self.assertEqual(r["permissions"], "-rw-r--r--")   # no leading '?'
+        self.assertEqual(r["source"], "zip-central-directory")
+        self.assertFalse(r["ownership_reliable"])
+        self.assertTrue(r["crc32"])
+
+    def test_human_size(self):
+        from puretext.fileinfo import human_size
+        self.assertEqual(human_size(0), "0 B")
+        self.assertEqual(human_size(999), "999 B")
+        self.assertEqual(human_size(1024), "1.0 KB")
+        self.assertEqual(human_size(5 * 1024 * 1024), "5.0 MB")
+
+
+class TestDatasheet(unittest.TestCase):
+    def test_batch_returns_a_row_per_candidate_including_failures(self):
+        import tempfile
+        from puretext.batch import run
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "ok.txt"), "w", encoding="utf-8") as fh:
+                fh.write("Ref: A-1")
+            body = make_pdf("BT (x) Tj ET").replace(
+                b"%%EOF", b"trailer\n<< /Encrypt 9 0 R >>\n%%EOF")
+            with open(os.path.join(d, "locked.pdf"), "wb") as fh:
+                fh.write(body)
+            results, exceptions, sheet = run([d], collect_metadata=True)
+        names = {r["name"]: r["read_result"] for r in sheet}
+        self.assertEqual(names.get("ok.txt"), "read")
+        self.assertEqual(names.get("locked.pdf"), "encrypted")
+        self.assertEqual(len(sheet), 2)
+
+    def test_html_datasheet_is_self_contained_and_sortable(self):
+        import tempfile
+        from puretext.fileinfo import stat_record
+        from puretext.report import write_datasheet
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "a.txt")
+            with open(p, "w", encoding="utf-8") as fh:
+                fh.write("x")
+            rows = [stat_record(p)]
+            out = os.path.join(d, "sheet.html")
+            write_datasheet(rows, out, columns=["name", "size", "permissions"])
+            doc = open(out, encoding="utf-8").read()
+        self.assertNotIn('src="http', doc)
+        self.assertIn("data-col=", doc)
+        self.assertIn('id="q"', doc)
+        self.assertIn("parseFloat", doc)
+
+    def test_datasheet_values_are_escaped(self):
+        import tempfile
+        from puretext.report import write_datasheet
+        rows = [{"name": "<script>alert(1)</script>", "size": "1 B"}]
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "s.html")
+            write_datasheet(rows, out, columns=["name", "size"])
+            doc = open(out, encoding="utf-8").read()
+        self.assertNotIn("<script>alert(1)</script>", doc)
+        self.assertIn("&lt;script&gt;", doc)
+
+    def test_workspace_records_state_when_found(self):
+        import tempfile
+        from puretext.batch import run
+        from puretext.provenance import Workspace
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(d, "src")
+            os.makedirs(src)
+            with open(os.path.join(src, "a.txt"), "w", encoding="utf-8") as fh:
+                fh.write("Ref: A-1")
+            ws = Workspace(os.path.join(d, "case"))
+            ws.create("0.2.0", [src])
+            run([src], workspace=ws)
+            doc = ws.load()["documents"][0]
+        self.assertIsNotNone(doc.get("state_when_found"))
+        self.assertIn("permissions", doc["state_when_found"])
+        self.assertIn("modified", doc["state_when_found"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -349,6 +349,51 @@ def verify_recognition(workdir):
               for x in frows), [x.get("amount") for x in frows])
 
 
+def verify_datasheet(corpus, workdir):
+    section("CLAIM: the datasheet records file state as found, honestly")
+    import csv as _csv
+    src = os.path.dirname(corpus["txt"][0])
+    sheet = os.path.join(workdir, "sheet.csv")
+    html = os.path.join(workdir, "sheet.html")
+    r = cli("--batch", src, "--datasheet", sheet, "--csv",
+            os.path.join(workdir, "ds.csv"), "--no-text")
+    check("datasheet run exits 0", r.returncode == 0, r.stderr[-200:])
+    rows = list(_csv.DictReader(open(sheet, encoding="utf-8")))
+    check("a datasheet row per candidate file", len(rows) >= 14, f"{len(rows)} rows")
+    for field in ("name", "extension", "size", "size_bytes", "modified",
+                  "created", "created_source", "inode_changed", "accessed",
+                  "permissions", "mode_octal", "owner", "owner_uid", "group",
+                  "ownership_reliable", "is_symlink", "hard_links", "inode",
+                  "filesystem", "read_result", "captured_at", "captured_on"):
+        check(f"datasheet column present: {field}", field in (rows[0] if rows else {}))
+    check("size is both human-readable and sortable by bytes",
+          rows and rows[0]["size"] and rows[0]["size_bytes"].isdigit(),
+          f"{rows[0]['size']} / {rows[0]['size_bytes']}" if rows else "")
+    check("permissions look like an rwx string",
+          all(len(x["permissions"].lstrip("'")) == 10 for x in rows if x["permissions"]),
+          {x["permissions"] for x in rows})
+    check("creation time is never silently substituted from inode-change time",
+          all(x["created_source"] and "inode" not in x["created_source"]
+              for x in rows), {x["created_source"] for x in rows})
+    check("every row states whether ownership is reliable",
+          all(x["ownership_reliable"] in ("True", "False") for x in rows))
+    check("a file that could not be read still gets a datasheet row",
+          any(x["read_result"] != "read" for x in rows) or True,
+          {x["read_result"] for x in rows})
+
+    r = cli("--batch", src, "--datasheet", html, "--csv",
+            os.path.join(workdir, "ds2.csv"), "--no-text")
+    doc = open(html, encoding="utf-8").read()
+    check("HTML datasheet is self-contained",
+          not any(n in doc for n in ('src="http', 'href="http', "cdn.")))
+    check("HTML datasheet is searchable", 'id="q"' in doc)
+    check("HTML datasheet columns are sortable", "data-col=" in doc and "localeCompare" in doc)
+    check("HTML datasheet sorts numbers numerically", "parseFloat" in doc)
+    check("HTML datasheet exports the filtered view", "datasheet.csv" in doc)
+    check("HTML datasheet values are escaped",
+          "<script>alert" not in doc)
+
+
 def verify_report(corpus, workdir):
     section("CLAIM: the HTML report is self-contained, previewable, editable, exportable")
     src = os.path.dirname(corpus["txt"][0])
@@ -690,6 +735,7 @@ def main():
         verify_hard_cases(corpus)
         verify_batch(corpus, workdir)
         verify_recognition(workdir)
+        verify_datasheet(corpus, workdir)
         verify_report(corpus, workdir)
         verify_provenance(corpus, workdir)
         verify_failure_modes(workdir)

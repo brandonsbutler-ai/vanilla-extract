@@ -23,6 +23,7 @@ import zipfile
 
 from . import UnsupportedFormat, extract_archive, extract_file, __version__
 from .batch import Field, run as run_batch, write_csv
+from .fileinfo import DATASHEET_COLUMNS
 from .recognize import infer_schema
 from .report import write_report
 from .provenance import Workspace, read_csv_rows
@@ -99,11 +100,36 @@ def _run_batch(args):
                   "try --min-support 0.3", file=sys.stderr)
 
     keep_text = (not args.no_text) or bool(args.report)
-    results, exceptions = run_batch(args.paths, fields=fields,
-                                    include_text=keep_text,
-                                    auto_labels=auto_labels,
-                                    workspace=ws,
-                                    copy_originals=not args.no_copy_originals)
+    want_meta = bool(args.datasheet) or ws is not None
+    batch_out = run_batch(args.paths, fields=fields,
+                          include_text=keep_text,
+                          auto_labels=auto_labels,
+                          workspace=ws,
+                          copy_originals=not args.no_copy_originals,
+                          collect_metadata=want_meta)
+    if want_meta:
+        results, exceptions, datasheet = batch_out
+    else:
+        results, exceptions = batch_out
+        datasheet = []
+
+    if args.datasheet:
+        present = [c for c in DATASHEET_COLUMNS
+                   if any(c in row for row in datasheet)]
+        if args.datasheet.lower().endswith((".html", ".htm")):
+            from .report import write_datasheet
+            write_datasheet(datasheet, args.datasheet, columns=present)
+        else:
+            write_csv(datasheet, args.datasheet, present)
+        print(f"datasheet -> {args.datasheet}  ({len(datasheet)} files)",
+              file=sys.stderr)
+        unreliable = sum(1 for r in datasheet
+                         if r.get("ownership_reliable") is False)
+        if unreliable:
+            print(f"puretext: {unreliable} file(s) sit on a filesystem that reports "
+                  f"ownership and permissions from mount options rather than from "
+                  f"the files; those columns are flagged not reliable",
+                  file=sys.stderr)
 
     columns = ["file", "characters"] + auto_labels + [f.name for f in fields]
     if args.report:
@@ -183,6 +209,11 @@ def main(argv=None):
     parser.add_argument("--verify", action="store_true",
                         help="with --workspace: re-hash every artefact and "
                              "report anything that changed since capture")
+    parser.add_argument("--datasheet", metavar="PATH",
+                        help="with --batch: write a searchable table of each file's "
+                             "state as found -- size, timestamps, permissions, "
+                             "owner, links, filesystem (CSV, or .html for a "
+                             "searchable page)")
     parser.add_argument("--report", metavar="PATH",
                         help="with --batch: write a self-contained HTML report with "
                              "per-document preview, in-place editing and CSV re-export")

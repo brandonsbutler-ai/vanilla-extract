@@ -80,6 +80,27 @@ alongside rather than buried, and a button exports the corrected table as CSV.
 Because nothing leaves the machine, a review of your own confidential documents stays on your
 machine.
 
+### The datasheet: what each file was when it arrived
+
+```
+puretext --batch invoices/ --datasheet state.html --csv out.csv
+```
+
+A searchable, sortable page recording each file's state as found: size, modified, accessed and
+created times, rwx permissions and octal mode, owner and group, symlink status and target,
+hard-link count, inode, filesystem type, and the extraction outcome. A file that could not be read
+still appears, with its state and the reason.
+
+Three caveats are built into the output rather than left to the reader:
+
+- **Creation time is not universally available.** Windows records it, macOS and the BSDs expose it,
+  and on Linux it exists only on some filesystems. Every row states where its value came from. The
+  inode-change time is reported under its own name and never presented as creation.
+- **NTFS, exFAT and network mounts report ownership and permissions from mount options, not from
+  the files.** Those rows are marked not reliable, and the page says why.
+- **A file inside a ZIP carries its own timestamp and mode**, which can predate the archive by
+  years. Those come from the archive's central directory.
+
 ### Keep the original and every correction
 
 ```
@@ -115,9 +136,9 @@ Three layers, because they catch different things.
 
 | Layer | What it is | What it catches |
 |---|---|---|
-| **Unit tests** (79) | `python3 -m unittest discover -s tests` | Logic errors in one function, and every past bug as a regression test |
+| **Unit tests** (90) | `python3 -m unittest discover -s tests` | Logic errors in one function, and every past bug as a regression test |
 | **Benchmark** | `python3 benchmark.py <dir>` | Extraction *quality*, scored against an independent implementation |
-| **End-to-end verification** (95 checks) | `python3 verify_e2e.py` | Whether the product does what its documentation says |
+| **End-to-end verification** (130 checks) | `python3 verify_e2e.py` | Whether the product does what its documentation says |
 
 The third layer is the unusual one. Unit tests check units; they cannot tell you the README is
 wrong. `verify_e2e.py` generates a fresh corpus in every supported format, drives the real
@@ -253,6 +274,10 @@ Every one of those is now a named regression test.
 
 ## 8. What these results do not prove
 
+- **The datasheet records what the filesystem reported, which is not always the truth about
+  the file.** Timestamps can be set by any program with write access, and a foreign mount
+  synthesizes ownership. The output flags what it cannot vouch for; it does not make the
+  filesystem trustworthy.
 - **SHA-256 in a workspace proves integrity, not authorship.** It detects drift. It is not a
   signature, and a workspace is not tamper-proof against someone who can write to it.
 - **Benchmark corpora are not your documents.** Corpus A is software-generated, corpus B is
@@ -265,7 +290,7 @@ Every one of those is now a named regression test.
   name for two different fonts on different pages can decode one of them wrong.
 - **Encryption is detected, never bypassed.** This tool will not help you read a document you do
   not have the password for.
-- **95 passing checks means the documented claims hold today, on this machine, for these
+- **130 passing checks means the documented claims hold today, on this machine, for these
   inputs.** It does not mean the tool is free of defects. The review above found 15 after the
   unit tests were green.
 
@@ -277,8 +302,8 @@ Every one of those is now a named regression test.
 git clone https://github.com/brandonsbutler-ai/puretext
 cd puretext
 
-python3 -m unittest discover -s tests -v    # 79 unit tests
-python3 verify_e2e.py                       # 95 end-to-end claim checks
+python3 -m unittest discover -s tests -v    # 90 unit tests
+python3 verify_e2e.py                       # 130 end-to-end claim checks
 python3 benchmark.py /path/to/your/pdfs     # quality against pdftotext
 ```
 

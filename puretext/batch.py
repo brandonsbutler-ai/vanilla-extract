@@ -23,7 +23,7 @@ import re
 import zipfile
 
 from . import UnsupportedFormat, extract, extract_file
-from . import recognize
+from . import fileinfo, recognize
 from .limits import ArchiveTooLarge, read_member
 from .formats.pdf import EncryptedPDF, UndecodableText
 
@@ -62,6 +62,15 @@ class Field:
         if not sep or not name.strip():
             raise ValueError(f"field spec must be NAME=REGEX, got {spec!r}")
         return cls(name.strip(), pattern)
+
+
+def _member_info(archive, member):
+    """ZipInfo for one member, or None if it cannot be read."""
+    try:
+        with zipfile.ZipFile(archive) as zf:
+            return zf.getinfo(member)
+    except (KeyError, zipfile.BadZipFile, OSError):
+        return None
 
 
 def _walk(paths, recurse_archives=True):
@@ -111,8 +120,18 @@ def _load(label, source):
     return extract(data, os.path.basename(member)), None, data
 
 
+def _record(sheet, meta, characters, result):
+    """Append one datasheet row, if metadata collection is on."""
+    if meta is None:
+        return
+    meta = dict(meta)
+    meta["characters_extracted"] = characters
+    meta["read_result"] = meta.get("read_result") or result
+    sheet.append(meta)
+
+
 def run(paths, fields=None, include_text=True, max_text=None, auto_labels=None,
-        workspace=None, copy_originals=True):
+        workspace=None, copy_originals=True, collect_metadata=False):
     """Extract every document under `paths`.
 
     Returns (results, exceptions) as lists of dicts. Nothing raises: a failure
@@ -126,34 +145,54 @@ def run(paths, fields=None, include_text=True, max_text=None, auto_labels=None,
     """
     fields = fields or []
     auto_labels = auto_labels or []
+    datasheet = []
     results, exceptions = [], []
 
     for label, source in _walk(paths):
         if label.lower().endswith(_SKIP_EXT):
             continue
+
+        meta = None
+        if collect_metadata or workspace is not None:
+            try:
+                if source is None:
+                    meta = fileinfo.stat_record(label)
+                else:
+                    info = _member_info(*source)
+                    meta = (fileinfo.zip_member_record(info, source[0])
+                            if info is not None else None)
+            except OSError as exc:
+                meta = {"path": label, "name": os.path.basename(label),
+                        "read_result": f"stat failed: {exc}"}
         try:
             text, src_path, src_bytes = _load(label, source)
         except EncryptedPDF as exc:
+            _record(datasheet, meta, None, "encrypted")
             exceptions.append({"file": label, "reason": "encrypted",
                                "detail": str(exc)})
             continue
         except UndecodableText as exc:
+            _record(datasheet, meta, None, "undecodable_fonts")
             exceptions.append({"file": label, "reason": "undecodable_fonts",
                                "detail": str(exc)})
             continue
         except UnsupportedFormat as exc:
+            _record(datasheet, meta, None, "unsupported_format")
             exceptions.append({"file": label, "reason": "unsupported_format",
                                "detail": str(exc)})
             continue
         except ArchiveTooLarge as exc:
+            _record(datasheet, meta, None, "archive_bomb")
             exceptions.append({"file": label, "reason": "archive_bomb",
                                "detail": str(exc)})
             continue
         except (OSError, zipfile.BadZipFile) as exc:
+            _record(datasheet, meta, None, "unreadable")
             exceptions.append({"file": label, "reason": "unreadable",
                                "detail": f"{type(exc).__name__}: {exc}"})
             continue
         except Exception as exc:                      # noqa: BLE001
+            _record(datasheet, meta, None, "error")
             exceptions.append({"file": label, "reason": "error",
                                "detail": f"{type(exc).__name__}: {exc}"})
             continue
@@ -161,6 +200,7 @@ def run(paths, fields=None, include_text=True, max_text=None, auto_labels=None,
         if not text.strip():
             # Read fine, contained nothing. Almost always a scan with no text
             # layer -- a caller needs to see this, not a blank row.
+            _record(datasheet, meta, 0, "no_text_found")
             exceptions.append({"file": label, "reason": "no_text_found",
                                "detail": "document read successfully but holds "
                                          "no extractable text (often a scan "
@@ -170,8 +210,10 @@ def run(paths, fields=None, include_text=True, max_text=None, auto_labels=None,
         if workspace is not None:
             workspace.capture(label, text, source_path=src_path,
                               source_bytes=src_bytes,
-                              copy_original=copy_originals)
+                              copy_original=copy_originals,
+                              file_state=meta)
 
+        _record(datasheet, meta, len(text), "read")
         row = {"file": label, "characters": len(text)}
         try:
             if auto_labels:
@@ -190,6 +232,8 @@ def run(paths, fields=None, include_text=True, max_text=None, auto_labels=None,
             row["text"] = text[:max_text] if max_text else text
         results.append(row)
 
+    if collect_metadata:
+        return results, exceptions, datasheet
     return results, exceptions
 
 

@@ -71,6 +71,7 @@ document never aborts the batch, and it never silently becomes an empty row eith
 | **Data** | CSV, TSV (delimiter sniffed), JSON (flattened to `path: value`) |
 | **Batch** | folder or archive in; results table, exceptions table, HTML review report out |
 | **Recognition** | label/value pairs, typed values, and schema inferred across a corpus |
+| **Datasheet** | size, timestamps, rwx permissions, owner, links, filesystem -- searchable |
 | **Text** | TXT, MD, LOG, with encoding detection |
 | **Archives** | ZIP containing any of the above |
 
@@ -193,6 +194,42 @@ people who cannot install Python or pip on their work machine.
 PyInstaller and Inno Setup are *build-time* tools. Neither ships inside the application, and the
 runtime dependency list stays empty.
 
+## The datasheet: file state as found
+
+A content hash proves the bytes did not change. The datasheet records the circumstances they
+arrived in.
+
+```bash
+puretext --batch invoices/ --datasheet state.csv --csv out.csv     # CSV
+puretext --batch invoices/ --datasheet state.html --csv out.csv    # searchable page
+```
+
+Per file: size (human and in bytes), modified, accessed, created, inode-change time, rwx
+permissions, octal mode, setuid/setgid/sticky, owner and group by name and id, symlink status and
+target, hard-link count, inode, filesystem type, and -- for members found inside a ZIP -- the
+entry's own timestamp, mode, compressed size, ratio and CRC32. Plus the extraction outcome, so a
+file that could not be read still appears with its state and the reason.
+
+The `.html` form is searchable and every column sorts, numerically where that is the right order
+(sorting `size` lexically puts "9 KB" after "10 MB").
+
+**Three things this gets right that a naive `os.stat` dump does not:**
+
+- **Creation time is not universally available.** Windows records it in `st_ctime`; macOS and the
+  BSDs expose `st_birthtime`; on Linux `os.stat` has neither, and `st_ctime` there is the
+  *inode-change* time -- a different fact, usually later. So creation is reported only when the
+  platform really has it, Linux gets a best-effort `statx` read, every row states **where the
+  value came from**, and inode-change time is reported under its own name rather than relabelled.
+- **Mounted foreign filesystems synthesize ownership and mode.** An NTFS or exFAT volume mounted
+  on Linux typically reports one uid and `0777` for every file, because those come from the mount
+  options. Such rows are marked `ownership_reliable = False` and the HTML datasheet explains why,
+  rather than presenting a mount default as the file's permissions.
+- **Archive members carry their own metadata**, which is not the archive's -- a member can predate
+  the containing ZIP by years. Those values are read from the central directory.
+
+With `--workspace`, each document's full state is also written into `manifest.json` as
+`state_when_found`.
+
 ## Keeping the original: workspaces
 
 Extraction deliverables get corrected by hand, and once corrected there is no way to tell which
@@ -281,8 +318,8 @@ rather have one.
 Two layers, both runnable:
 
 ```bash
-python3 -m unittest discover -s tests -v     # 79 unit tests
-python3 verify_e2e.py                        # 95 end-to-end claim checks
+python3 -m unittest discover -s tests -v     # 90 unit tests
+python3 verify_e2e.py                        # 130 end-to-end claim checks
 ```
 
 `verify_e2e.py` exists because unit tests check units, not promises. It generates a fresh corpus
@@ -301,7 +338,7 @@ figures here are whatever it last measured, not what would read best.
 python3 -m unittest discover -s tests -v
 ```
 
-79 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
+90 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
 there is nothing opaque in the repo. The suite covers the cases that actually break extractors:
 balanced parens inside PDF strings, escaped close-parens, octal escapes, odd hex nibbles,
 RTF `\fonttbl` contents leaking into output, cp1252 fallback, and misnamed files -- plus the

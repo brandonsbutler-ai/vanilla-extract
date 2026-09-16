@@ -225,3 +225,141 @@ def write_report(results, exceptions, path, columns=None, title="Extraction repo
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(doc)
     return path
+
+
+_SHEET_JS = """
+const rows = () => [...document.querySelectorAll('#sheet tbody tr')];
+const q = document.getElementById('q');
+q.addEventListener('input', () => {
+  const needle = q.value.toLowerCase();
+  let shown = 0;
+  rows().forEach(tr => {
+    const hit = !needle || tr.textContent.toLowerCase().includes(needle);
+    tr.hidden = !hit;
+    if (hit) shown++;
+  });
+  document.getElementById('count').textContent = shown + ' of ' + rows().length;
+});
+
+// Click a header to sort. Numeric columns sort numerically, which matters for
+// size and for character counts -- lexical order puts "9 KB" after "10 MB".
+let sortCol = -1, asc = true;
+document.querySelectorAll('#sheet thead th').forEach((th, i) => {
+  th.addEventListener('click', () => {
+    asc = (sortCol === i) ? !asc : true;
+    sortCol = i;
+    const body = document.querySelector('#sheet tbody');
+    const sorted = rows().sort((a, b) => {
+      const x = a.children[i].dataset.sort ?? a.children[i].textContent.trim();
+      const y = b.children[i].dataset.sort ?? b.children[i].textContent.trim();
+      const nx = parseFloat(x), ny = parseFloat(y);
+      const both = !isNaN(nx) && !isNaN(ny) && x !== '' && y !== '';
+      const cmp = both ? nx - ny : x.localeCompare(y);
+      return asc ? cmp : -cmp;
+    });
+    sorted.forEach(tr => body.appendChild(tr));
+    document.querySelectorAll('#sheet thead th').forEach(h => h.dataset.dir = '');
+    th.dataset.dir = asc ? 'up' : 'down';
+  });
+});
+
+document.getElementById('export').addEventListener('click', () => {
+  const head = [...document.querySelectorAll('#sheet thead th')]
+      .map(th => th.dataset.col);
+  const out = [head.map(csvCell).join(',')];
+  rows().filter(tr => !tr.hidden).forEach(tr => {
+    out.push([...tr.children].map(td => csvCell(td.textContent.trim())).join(','));
+  });
+  const blob = new Blob([out.join('\\n')], {type: 'text/csv'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'datasheet.csv';
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+
+function csvCell(s){
+  s = (s ?? '').toString();
+  if(/^[=+\\-@\\t\\r]/.test(s)) s = "'" + s;
+  return /[",\\n]/.test(s) ? '"' + s.replace(/"/g,'""') + '"' : s;
+}
+"""
+
+_SHEET_CSS = """
+th{cursor:pointer;user-select:none}
+th[data-dir=up]::after{content:" \\2191"}
+th[data-dir=down]::after{content:" \\2193"}
+td.num{text-align:right;font-variant-numeric:tabular-nums}
+td.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+.flag{color:var(--warn);font-weight:600}
+.note{background:var(--warnbg);border:1px solid var(--line);border-radius:8px;
+      padding:10px 13px;margin-bottom:16px;font-size:13px}
+"""
+
+_NUMERIC = {"size_bytes", "compressed_bytes", "compression_ratio", "hard_links",
+            "inode", "owner_uid", "group_gid", "characters_extracted"}
+_MONO = {"path", "permissions", "mode_octal", "crc32", "sha256", "modified",
+         "created", "inode_changed", "accessed", "captured_at"}
+
+
+def write_datasheet(rows, path, columns=None, title="File state datasheet"):
+    """Write a searchable, sortable HTML datasheet of file metadata."""
+    rows = list(rows)
+    columns = columns or (list(rows[0].keys()) if rows else ["name"])
+
+    head = "".join(
+        f'<th data-col="{_esc(c)}">{_esc(c.replace("_", " "))}</th>' for c in columns)
+
+    body = []
+    for row in rows:
+        cells = []
+        for col in columns:
+            value = row.get(col)
+            shown = "" if value is None else str(value)
+            cls = "num" if col in _NUMERIC else ("mono" if col in _MONO else "")
+            if col == "ownership_reliable" and value is False:
+                cells.append('<td class="flag">not reliable</td>')
+                continue
+            sort_attr = f' data-sort="{_esc(row.get("size_bytes", ""))}"' if col == "size" else ""
+            cells.append(f'<td class="{cls}"{sort_attr}>{_esc(shown)}</td>')
+        body.append("<tr>" + "".join(cells) + "</tr>")
+
+    unreliable = sum(1 for r in rows if r.get("ownership_reliable") is False)
+    no_created = sum(1 for r in rows if not r.get("created"))
+    notes = []
+    if unreliable:
+        notes.append(
+            f"<strong>{unreliable} of {len(rows)} files</strong> sit on a filesystem "
+            f"that reports ownership and permissions from mount options rather than "
+            f"from the files themselves (NTFS, exFAT, SMB and similar). Those "
+            f"columns are marked <span class=\"flag\">not reliable</span> and should "
+            f"not be read as the file's real attributes.")
+    if no_created:
+        notes.append(
+            f"<strong>{no_created} of {len(rows)} files</strong> have no creation "
+            f"time. Creation time is not universally available: Windows records it, "
+            f"macOS and the BSDs expose it, and on Linux it exists only on some "
+            f"filesystems. The <em>created source</em> column says where each value "
+            f"came from, and the field is left empty rather than substituting the "
+            f"inode change time, which is a different fact.")
+
+    doc = f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>{_esc(title)}</title><style>{_CSS}{_SHEET_CSS}</style></head><body><div class="wrap">
+<h1>{_esc(title)}</h1>
+<div class="sub">{len(rows)} files &middot; state as found, captured
+{datetime.datetime.now().strftime("%Y-%m-%d %H:%M")} &middot; click a column to sort</div>
+{"".join(f'<div class="note">{n}</div>' for n in notes)}
+<div class="bar">
+  <input type="search" id="q" placeholder="Filter by name, owner, date, permissions...">
+  <button class="primary" id="export">Export filtered CSV</button>
+  <span class="sub" id="count" style="margin:0">{len(rows)} of {len(rows)}</span>
+</div>
+<div class="tablewrap"><table id="sheet"><thead><tr>{head}</tr></thead>
+<tbody>{"".join(body) or '<tr><td class="empty">No files.</td></tr>'}</tbody></table></div>
+</div><script>{_SHEET_JS}</script></body></html>"""
+
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(doc)
+    return path
