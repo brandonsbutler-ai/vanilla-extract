@@ -25,8 +25,37 @@ python3 -m puretext --batch invoices/ --csv results.csv --exceptions skipped.csv
     --field "total=Total\s*:?\s*\$?([0-9,]+\.[0-9]{2})"
 ```
 
-One row per document, one column per field you asked for, and **a second table naming every file
-that could not be read and why**. That second table is the point: encrypted PDFs, scans with no
+**Or let it find the fields itself**, which is the point when the client has 400 documents and no
+idea what regex to write:
+
+```bash
+python3 -m puretext --batch invoices/ --recognize --report review.html --csv results.csv
+```
+
+```
+puretext: discovered fields --
+    invoice number           4 docs (100%)  identifier e.g. INV-1001
+    invoice date             4 docs (100%)  date_iso   e.g. 2026-03-14
+    customer                 4 docs (100%)  text       e.g. Northwind Traders
+    terms                    4 docs (100%)  text       e.g. Net 30
+    total                    4 docs (100%)  money      e.g. $1,299.00
+    contact                  4 docs (100%)  email      e.g. ap@northwind.example
+```
+
+`--recognize` reads label/value pairs out of each document -- colon-separated, column-separated,
+and label-on-its-own-line, since a flattened PDF renders forms all three ways -- then ranks labels
+by how many documents carry them. A label in 380 of 400 files is a column; one in 3 is noise.
+Each column is typed by a conservative detector (money, dates, email, phone, percent, identifier),
+because a pattern that fires on the wrong thing costs more than one that stays quiet.
+
+`--report` writes a **single self-contained HTML file**: every extracted value editable in place,
+the source text of each document one click away so a suspect value can be checked against the page
+it came from, the exceptions table given equal billing, and a button that exports the corrected
+table back out as CSV. No server, no external assets, nothing uploaded -- so a client can review a
+delivery of their own sensitive documents without it leaving their machine.
+
+One row per document, one column per field, and **a second table naming every file that could not
+be read and why**. That second table is the point: encrypted PDFs, scans with no
 text layer, and files whose fonts carry no character map all look like empty documents to most
 extraction tools and arrive as blank rows nobody notices until the data is already in use. A bad
 document never aborts the batch, and it never silently becomes an empty row either.
@@ -40,6 +69,8 @@ document never aborts the batch, and it never silently becomes an empty row eith
 | **Email** | EML, MBOX — headers, body, attachment names |
 | **Markup** | HTML (scripts and styles dropped), XML |
 | **Data** | CSV, TSV (delimiter sniffed), JSON (flattened to `path: value`) |
+| **Batch** | folder or archive in; results table, exceptions table, HTML review report out |
+| **Recognition** | label/value pairs, typed values, and schema inferred across a corpus |
 | **Text** | TXT, MD, LOG, with encoding detection |
 | **Archives** | ZIP containing any of the above |
 
@@ -138,7 +169,7 @@ LibreOffice PDF returns control characters instead of words.
 python3 -m unittest discover -s tests -v
 ```
 
-36 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
+51 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
 there is nothing opaque in the repo. The suite covers the cases that actually break extractors:
 balanced parens inside PDF strings, escaped close-parens, octal escapes, odd hex nibbles,
 RTF `\fonttbl` contents leaking into output, cp1252 fallback, and misnamed files -- plus the

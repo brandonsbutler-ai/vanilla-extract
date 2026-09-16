@@ -23,6 +23,8 @@ import zipfile
 
 from . import UnsupportedFormat, extract_archive, extract_file, __version__
 from .batch import Field, run as run_batch, write_csv
+from .recognize import infer_schema
+from .report import write_report
 
 
 def _emit_text(label, text, show_headers):
@@ -39,14 +41,38 @@ def _run_batch(args):
         print(f"puretext: {exc}", file=sys.stderr)
         return 2
 
+    auto_labels = []
+    if args.recognize:
+        # First pass: read the corpus and let the common structure emerge.
+        seen, _ = run_batch(args.paths, include_text=True)
+        schema = infer_schema((r["text"] for r in seen),
+                              min_support=args.min_support)
+        auto_labels = [f["label"] for f in schema]
+        if schema:
+            print("puretext: discovered fields --", file=sys.stderr)
+            for f in schema:
+                print(f"    {f['label']:<24} {f['support']} docs "
+                      f"({f['ratio']:.0%})  {f['kind']:<10} e.g. {f['example'][:40]}",
+                      file=sys.stderr)
+        else:
+            print("puretext: no field common to enough documents; "
+                  "try --min-support 0.3", file=sys.stderr)
+
+    keep_text = (not args.no_text) or bool(args.report)
     results, exceptions = run_batch(args.paths, fields=fields,
-                                    include_text=not args.no_text)
+                                    include_text=keep_text,
+                                    auto_labels=auto_labels)
+
+    columns = ["file", "characters"] + auto_labels + [f.name for f in fields]
+    if args.report:
+        write_report(results, exceptions, args.report, columns=columns)
+        print(f"report -> {args.report}", file=sys.stderr)
 
     if args.csv:
-        columns = ["file", "characters"] + [f.name for f in fields]
+        csv_columns = list(columns)
         if not args.no_text:
-            columns.append("text")
-        write_csv(results, args.csv, columns)
+            csv_columns.append("text")
+        write_csv(results, args.csv, csv_columns)
         print(f"{len(results)} documents -> {args.csv}", file=sys.stderr)
     else:
         for row in results:
@@ -89,6 +115,15 @@ def main(argv=None):
                              "(repeatable). The first capture group wins if present.")
     parser.add_argument("--no-text", action="store_true",
                         help="with --batch: omit the full text column")
+    parser.add_argument("--recognize", action="store_true",
+                        help="with --batch: discover the fields from the documents "
+                             "themselves instead of being given regexes")
+    parser.add_argument("--min-support", type=float, default=0.5, metavar="F",
+                        help="with --recognize: fraction of documents a label must "
+                             "appear in to become a column (default 0.5)")
+    parser.add_argument("--report", metavar="PATH",
+                        help="with --batch: write a self-contained HTML report with "
+                             "per-document preview, in-place editing and CSV re-export")
     args = parser.parse_args(argv)
 
     if args.batch:

@@ -23,6 +23,7 @@ import re
 import zipfile
 
 from . import UnsupportedFormat, extract, extract_file
+from . import recognize
 from .formats.pdf import EncryptedPDF, UndecodableText
 
 # Extensions we do not attempt; listing them keeps the exceptions table
@@ -83,13 +84,17 @@ def _load(label, source):
     return extract(data, os.path.basename(member))
 
 
-def run(paths, fields=None, include_text=True, max_text=None):
+def run(paths, fields=None, include_text=True, max_text=None, auto_labels=None):
     """Extract every document under `paths`.
 
     Returns (results, exceptions) as lists of dicts. Nothing raises: a failure
     on one document becomes a row in `exceptions` so the batch completes.
+
+    `auto_labels` are labels discovered by recognize.infer_schema(); each
+    becomes a column filled from the document's own label/value pairs.
     """
     fields = fields or []
+    auto_labels = auto_labels or []
     results, exceptions = [], []
 
     for label, source in _walk(paths):
@@ -128,6 +133,8 @@ def run(paths, fields=None, include_text=True, max_text=None):
             continue
 
         row = {"file": label, "characters": len(text)}
+        if auto_labels:
+            row.update(recognize.extract_fields(text, auto_labels))
         for field in fields:
             row[field.name] = field.find(text)
         if include_text:

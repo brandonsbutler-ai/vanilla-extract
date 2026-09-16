@@ -294,3 +294,121 @@ class TestBatch(unittest.TestCase):
             self.assertEqual(written, 0)
             with open(path, encoding="utf-8") as fh:
                 self.assertEqual(fh.read().strip(), "file,reason,detail")
+
+
+class TestRecognize(unittest.TestCase):
+    DOC = ("ACME SUPPLY CO\n"
+           "Invoice Number: INV-1001\n"
+           "Invoice Date: 2026-03-14\n"
+           "Terms    Net 30\n"
+           "Total: $1,299.00\n"
+           "Contact: ap@northwind.example\n")
+
+    def test_colon_form(self):
+        from puretext.recognize import label_values
+        self.assertEqual(label_values(self.DOC)["invoice number"], "INV-1001")
+
+    def test_column_form(self):
+        """Two-or-more spaces is the other way a flattened PDF renders a form."""
+        from puretext.recognize import label_values
+        self.assertEqual(label_values(self.DOC)["terms"], "Net 30")
+
+    def test_label_on_its_own_line(self):
+        from puretext.recognize import label_values
+        pairs = label_values("Ship To\n42 Rue Morgue\n")
+        self.assertEqual(pairs.get("ship to"), "42 Rue Morgue")
+
+    def test_first_occurrence_wins(self):
+        """A footer repeat must not overwrite the form's own statement."""
+        from puretext.recognize import label_values
+        pairs = label_values("Total: $10.00\nsome body text\nTotal: $99.99\n")
+        self.assertEqual(pairs["total"], "$10.00")
+
+    def test_labels_are_normalized(self):
+        from puretext.recognize import normalize_label
+        self.assertEqual(normalize_label("  Invoice   Number :"), "invoice number")
+
+    def test_classify_types(self):
+        from puretext.recognize import classify
+        self.assertEqual(classify("$1,299.00"), "money")
+        self.assertEqual(classify("2026-03-14"), "date_iso")
+        self.assertEqual(classify("ap@northwind.example"), "email")
+        self.assertEqual(classify("INV-1001"), "identifier")
+        self.assertEqual(classify("Net 30"), "text")
+
+    def test_infer_schema_ranks_by_support(self):
+        from puretext.recognize import infer_schema
+        common = "Invoice Number: A-1\nTotal: $5.00\n"
+        rare = "Invoice Number: A-2\nTotal: $6.00\nRush Fee: $2.00\n"
+        schema = infer_schema([common, common, common, rare])
+        labels = [f["label"] for f in schema]
+        self.assertIn("invoice number", labels)
+        self.assertIn("total", labels)
+        # present in 1 of 4 documents, below the 0.5 default
+        self.assertNotIn("rush fee", labels)
+
+    def test_infer_schema_honours_min_support(self):
+        from puretext.recognize import infer_schema
+        # Two form types mixed in one folder, each label in half the corpus.
+        docs = ["Order Number: 1\n", "Order Number: 2\n",
+                "Claim Number: 3\n", "Claim Number: 4\n"]
+        self.assertEqual(len(infer_schema(docs, min_support=0.9)), 0)
+        self.assertEqual(len(infer_schema(docs, min_support=0.5)), 2)
+
+    def test_single_character_labels_are_rejected_as_noise(self):
+        """`A: 1` is a list marker or an artefact far more often than a field."""
+        from puretext.recognize import infer_schema
+        self.assertEqual(infer_schema(["A: 1\n", "A: 2\n"], min_support=0.5), [])
+
+    def test_extract_fields_fills_missing_with_blank(self):
+        from puretext.recognize import extract_fields
+        got = extract_fields(self.DOC, ["invoice number", "purchase order"])
+        self.assertEqual(got["invoice number"], "INV-1001")
+        self.assertEqual(got["purchase order"], "")
+
+    def test_empty_corpus(self):
+        from puretext.recognize import infer_schema
+        self.assertEqual(infer_schema([]), [])
+
+
+class TestReport(unittest.TestCase):
+    ROWS = [{"file": "a.pdf", "characters": 12, "total": "$5.00", "text": "Total: $5.00"}]
+    EXCS = [{"file": "b.pdf", "reason": "encrypted", "detail": "needs a password"}]
+
+    def _render(self, **kw):
+        import tempfile
+        from puretext.report import write_report
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "r.html")
+            write_report(self.ROWS, self.EXCS, path, **kw)
+            with open(path, encoding="utf-8") as fh:
+                return fh.read()
+
+    def test_report_is_self_contained(self):
+        """No external assets: it must work from a file:// URL, offline."""
+        doc = self._render()
+        for needle in ("src=\"http", "href=\"http", "cdn."):
+            self.assertNotIn(needle, doc)
+
+    def test_exceptions_are_shown_not_hidden(self):
+        doc = self._render()
+        self.assertIn("encrypted", doc)
+        self.assertIn("needs a password", doc)
+
+    def test_values_are_escaped(self):
+        """A document containing markup must not be able to inject it."""
+        import tempfile
+        from puretext.report import write_report
+        rows = [{"file": "x.pdf", "characters": 1,
+                 "total": "<script>alert(1)</script>", "text": "t"}]
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "r.html")
+            write_report(rows, [], path)
+            doc = open(path, encoding="utf-8").read()
+        self.assertNotIn("<script>alert(1)</script>", doc)
+        self.assertIn("&lt;script&gt;", doc)
+
+    def test_file_column_is_not_editable(self):
+        """The filename identifies the row; editing it would break provenance."""
+        doc = self._render()
+        self.assertIn('<td class="file">a.pdf</td>', doc)
