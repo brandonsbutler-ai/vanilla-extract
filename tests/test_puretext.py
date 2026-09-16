@@ -202,3 +202,95 @@ class TestArchive(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestBatch(unittest.TestCase):
+    """Batch mode: the shape the work actually takes."""
+
+    def _corpus(self, d):
+        """A folder holding one readable file, one encrypted PDF, one image."""
+        with open(os.path.join(d, "a.txt"), "w", encoding="utf-8") as fh:
+            fh.write("Invoice #A-1001\nTotal: $42.50\n")
+        with open(os.path.join(d, "b.docx"), "wb") as fh:
+            fh.write(make_docx(["Invoice #B-2002", "Total: $7.00"]))
+        # A PDF whose trailer declares encryption.
+        body = make_pdf("BT (hidden) Tj ET")
+        body = body.replace(b"%%EOF", b"trailer\n<< /Encrypt 9 0 R >>\n%%EOF")
+        with open(os.path.join(d, "c.pdf"), "wb") as fh:
+            fh.write(body)
+        with open(os.path.join(d, "d.png"), "wb") as fh:
+            fh.write(b"\x89PNG\r\n\x1a\n not really an image")
+
+    def test_results_and_exceptions_are_separate(self):
+        import tempfile
+        from puretext.batch import run
+        with tempfile.TemporaryDirectory() as d:
+            self._corpus(d)
+            results, exceptions = run([d])
+        names = sorted(os.path.basename(r["file"]) for r in results)
+        self.assertEqual(names, ["a.txt", "b.docx"])
+        # the image is skipped silently; the encrypted PDF is REPORTED
+        reasons = {os.path.basename(e["file"]): e["reason"] for e in exceptions}
+        self.assertEqual(reasons, {"c.pdf": "encrypted"})
+
+    def test_unreadable_file_never_aborts_the_batch(self):
+        """One bad document must not cost the caller the other 399."""
+        import tempfile
+        from puretext.batch import run
+        with tempfile.TemporaryDirectory() as d:
+            self._corpus(d)
+            with open(os.path.join(d, "e.bin"), "wb") as fh:
+                fh.write(b"\x00\x01\x02\x03\x00\x01")
+            results, exceptions = run([d])
+        self.assertEqual(len(results), 2)
+        self.assertIn("unsupported_format",
+                      {e["reason"] for e in exceptions})
+
+    def test_empty_document_is_an_exception_not_a_blank_row(self):
+        """A scan with no text layer must be named, not returned as empty."""
+        import tempfile
+        from puretext.batch import run
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "blank.txt"), "w", encoding="utf-8") as fh:
+                fh.write("   \n\n  ")
+            results, exceptions = run([d])
+        self.assertEqual(results, [])
+        self.assertEqual(exceptions[0]["reason"], "no_text_found")
+
+    def test_field_extraction_uses_first_capture_group(self):
+        import tempfile
+        from puretext.batch import Field, run
+        with tempfile.TemporaryDirectory() as d:
+            self._corpus(d)
+            fields = [Field.parse(r"invoice=Invoice\s*#([A-Z0-9-]+)"),
+                      Field.parse(r"total=Total:\s*\$([0-9.]+)")]
+            results, _ = run([d], fields=fields)
+        by_name = {os.path.basename(r["file"]): r for r in results}
+        self.assertEqual(by_name["a.txt"]["invoice"], "A-1001")
+        self.assertEqual(by_name["a.txt"]["total"], "42.50")
+        self.assertEqual(by_name["b.docx"]["invoice"], "B-2002")
+
+    def test_missing_field_is_empty_not_absent(self):
+        """A column must exist for every field on every row, or the CSV is ragged."""
+        import tempfile
+        from puretext.batch import Field, run
+        with tempfile.TemporaryDirectory() as d:
+            self._corpus(d)
+            results, _ = run([d], fields=[Field.parse("nope=ZZZNOMATCHZZZ")])
+        self.assertTrue(all("nope" in r for r in results))
+        self.assertTrue(all(r["nope"] == "" for r in results))
+
+    def test_bad_field_spec_is_rejected(self):
+        from puretext.batch import Field
+        with self.assertRaises(ValueError):
+            Field.parse("no-equals-sign")
+
+    def test_write_csv_emits_header_even_when_empty(self):
+        import tempfile
+        from puretext.batch import write_csv
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "out.csv")
+            written = write_csv([], path, ["file", "reason", "detail"])
+            self.assertEqual(written, 0)
+            with open(path, encoding="utf-8") as fh:
+                self.assertEqual(fh.read().strip(), "file,reason,detail")

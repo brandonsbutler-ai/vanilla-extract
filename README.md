@@ -17,6 +17,20 @@ from puretext import extract_file
 text = extract_file("statement.pdf")
 ```
 
+**A folder of documents into a spreadsheet**, which is the shape this work usually takes:
+
+```bash
+python3 -m puretext --batch invoices/ --csv results.csv --exceptions skipped.csv \
+    --field "invoice_no=Invoice\s*#?\s*([A-Z0-9-]+)" \
+    --field "total=Total\s*:?\s*\$?([0-9,]+\.[0-9]{2})"
+```
+
+One row per document, one column per field you asked for, and **a second table naming every file
+that could not be read and why**. That second table is the point: encrypted PDFs, scans with no
+text layer, and files whose fonts carry no character map all look like empty documents to most
+extraction tools and arrive as blank rows nobody notices until the data is already in use. A bad
+document never aborts the batch, and it never silently becomes an empty row either.
+
 ## Formats
 
 | | |
@@ -124,10 +138,12 @@ LibreOffice PDF returns control characters instead of words.
 python3 -m unittest discover -s tests -v
 ```
 
-29 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
+36 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
 there is nothing opaque in the repo. The suite covers the cases that actually break extractors:
 balanced parens inside PDF strings, escaped close-parens, octal escapes, odd hex nibbles,
-RTF `\fonttbl` contents leaking into output, cp1252 fallback, and misnamed files.
+RTF `\fonttbl` contents leaking into output, cp1252 fallback, and misnamed files -- plus the
+batch guarantees: one bad document never aborts the run, an empty document is reported rather
+than returned as a blank row, and every requested field column exists on every row.
 
 ## License
 
