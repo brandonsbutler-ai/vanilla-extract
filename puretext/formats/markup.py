@@ -9,7 +9,18 @@ from html.parser import HTMLParser
 import re
 import xml.etree.ElementTree as ET
 
-_SKIP = {"script", "style", "head", "meta", "link", "noscript"}
+from .plain import decode_text
+
+# Containers whose CONTENT is code or metadata rather than text. Depth-tracked,
+# so they must have closing tags.
+_SKIP = {"script", "style", "head", "noscript"}
+
+# Void elements: no closing tag exists, so they must never be depth-tracked.
+# Counting <meta> as a skip container latched the counter open and discarded
+# every byte after it -- which is to say, every real HTML page and every
+# HTML-only email body extracted as an empty string.
+_VOID = {"meta", "link", "br", "img", "hr", "input", "source", "track",
+         "area", "base", "col", "embed", "param", "wbr"}
 _BLOCK = {"p", "div", "br", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6",
           "section", "article", "header", "footer", "blockquote", "pre",
           "table", "ul", "ol", "td", "th"}
@@ -22,12 +33,24 @@ class _TextHTMLParser(HTMLParser):
         self._skip_depth = 0
 
     def handle_starttag(self, tag, attrs):
+        if tag in _VOID:
+            # No end tag will ever arrive; only <br> contributes a break.
+            if tag in _BLOCK:
+                self.parts.append("\n")
+            return
         if tag in _SKIP:
             self._skip_depth += 1
         elif tag in _BLOCK:
             self.parts.append("\n")
 
+    def handle_startendtag(self, tag, attrs):
+        # <meta />, <br /> -- self-closing form. Never change skip depth.
+        if tag in _BLOCK:
+            self.parts.append("\n")
+
     def handle_endtag(self, tag):
+        if tag in _VOID:
+            return
         if tag in _SKIP and self._skip_depth:
             self._skip_depth -= 1
         elif tag in _BLOCK:
@@ -56,7 +79,10 @@ def strip_html(text):
 
 def extract_html(fh):
     data = fh.read() if hasattr(fh, "read") else fh
-    return strip_html(data.decode("utf-8", errors="replace"))
+    # Use the encoding ladder rather than utf-8-or-replacement: a cp1252 page
+    # (the normal output of Windows authoring tools) otherwise turns every
+    # smart quote and accent into U+FFFD.
+    return strip_html(decode_text(data))
 
 
 def extract_xml(fh):
@@ -69,7 +95,7 @@ def extract_xml(fh):
     try:
         root = ET.fromstring(data)
     except ET.ParseError:
-        return strip_html(data.decode("utf-8", errors="replace"))
+        return strip_html(decode_text(data))
     lines = []
     for node in root.iter():
         if node.text and node.text.strip():

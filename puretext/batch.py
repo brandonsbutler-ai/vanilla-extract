@@ -42,11 +42,18 @@ class Field:
         self.regex = re.compile(pattern, flags)
 
     def find(self, text):
-        """First match; the first capture group if the pattern has one."""
+        """First match; the first capture group if the pattern has one.
+
+        `m.group(1)` is None when group 1 sits in a branch that did not
+        participate -- `(a)|b` matching "b" -- so the `or ""` matters: without
+        it a perfectly reasonable alternation pattern raised AttributeError and
+        killed the whole batch.
+        """
         m = self.regex.search(text)
         if not m:
             return ""
-        return (m.group(1) if m.groups() else m.group(0)).strip()
+        value = m.group(1) if m.groups() else m.group(0)
+        return (value or "").strip()
 
     @classmethod
     def parse(cls, spec):
@@ -64,6 +71,23 @@ def _walk(paths, recurse_archives=True):
             for root, _dirs, files in os.walk(path):
                 for name in sorted(files):
                     full = os.path.join(root, name)
+                    # Recurse into archives found by walking, too. Previously
+                    # only archives named on the command line were opened, so a
+                    # bundle.zip inside a scanned folder produced no result row
+                    # AND no exception row -- it simply disappeared, which is
+                    # the one thing this module promises never to do.
+                    if (recurse_archives and zipfile.is_zipfile(full)
+                            and not full.lower().endswith(
+                                (".docx", ".pptx", ".xlsx", ".odt"))):
+                        try:
+                            with zipfile.ZipFile(full) as zf:
+                                members = [i for i in zf.infolist() if not i.is_dir()]
+                        except (zipfile.BadZipFile, OSError):
+                            yield full, None
+                            continue
+                        for info in members:
+                            yield f"{full}!{info.filename}", (full, info.filename)
+                        continue
                     yield full, None
         elif zipfile.is_zipfile(path) and recurse_archives and not path.lower().endswith(
                 (".docx", ".pptx", ".xlsx", ".odt")):
@@ -149,15 +173,41 @@ def run(paths, fields=None, include_text=True, max_text=None, auto_labels=None,
                               copy_original=copy_originals)
 
         row = {"file": label, "characters": len(text)}
-        if auto_labels:
-            row.update(recognize.extract_fields(text, auto_labels))
-        for field in fields:
-            row[field.name] = field.find(text)
+        try:
+            if auto_labels:
+                row.update(recognize.extract_fields(text, auto_labels))
+            for field in fields:
+                row[field.name] = field.find(text)
+        except Exception as exc:                  # noqa: BLE001
+            # A field pattern that misbehaves on one document must not cost the
+            # caller the other 399. The row is kept with blank fields and the
+            # failure is reported.
+            for name in list(auto_labels) + [f.name for f in fields]:
+                row.setdefault(name, "")
+            exceptions.append({"file": label, "reason": "field_extraction_failed",
+                               "detail": f"{type(exc).__name__}: {exc}"})
         if include_text:
             row["text"] = text[:max_text] if max_text else text
         results.append(row)
 
     return results, exceptions
+
+
+_FORMULA_LEAD = ("=", "+", "-", "@", "\t", "\r")
+
+
+def csv_safe(value):
+    r"""Neutralize spreadsheet formula injection in an extracted value.
+
+    Excel, LibreOffice and Sheets treat a cell beginning `=`, `+`, `-`, `@`,
+    tab or CR as a formula. The documented workflow here is "untrusted
+    documents in, a spreadsheet the client opens out", so a document
+    containing `=cmd|' /C calc'!A0` is a live path to code execution on the
+    reviewer's machine. Prefixing an apostrophe is the standard defence: the
+    value still reads correctly, it just is not evaluated.
+    """
+    text = "" if value is None else str(value)
+    return "'" + text if text.startswith(_FORMULA_LEAD) else text
 
 
 def write_csv(rows, path, columns=None):
@@ -172,5 +222,5 @@ def write_csv(rows, path, columns=None):
         writer = csv.DictWriter(fh, fieldnames=columns, extrasaction="ignore")
         writer.writeheader()
         for row in rows:
-            writer.writerow(row)
+            writer.writerow({k: csv_safe(v) for k, v in row.items()})
     return len(rows)

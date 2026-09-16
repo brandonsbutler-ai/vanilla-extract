@@ -26,6 +26,7 @@ import re
 import zlib
 
 from . import pdfcmap
+from ..limits import bounded_inflate
 
 
 class UndecodableText(Exception):
@@ -93,16 +94,17 @@ def _decompress(header, raw):
     decode or fall out later when no text operators are found.
     """
     if b"/FlateDecode" in header:
-        try:
-            return zlib.decompress(raw)
-        except zlib.error:
-            # Truncated or with junk after the deflate block -- salvage what
-            # decompressed before the error rather than dropping the page.
-            try:
-                d = zlib.decompressobj()
-                return d.decompress(raw)
-            except zlib.error:
-                return None
+        # Bounded: a PDF stream declares no output size, so the only way to
+        # refuse a decompression bomb is to inflate with a ceiling. A truncated
+        # or junk-terminated stream still yields whatever decompressed before
+        # the error, rather than costing the whole page.
+        data, truncated = bounded_inflate(raw)
+        if data is None:
+            return None
+        if truncated:
+            # Keep what fits; a bomb contributes its first 128 MB and no more.
+            return data
+        return data
     if b"/Filter" in header:
         # DCTDecode (JPEG), CCITTFax, JBIG2, LZW and friends: not text we can
         # reach without a codec. Skip rather than emit garbage.

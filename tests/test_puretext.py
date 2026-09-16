@@ -200,9 +200,6 @@ class TestArchive(unittest.TestCase):
         self.assertNotIn("c.png", texts)
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
 
 class TestBatch(unittest.TestCase):
     """Batch mode: the shape the work actually takes."""
@@ -583,3 +580,152 @@ class TestHostileInput(unittest.TestCase):
             for _, regex in DETECTORS:
                 regex.search(text)
         self.assertLess(time.time() - start, 5.0)
+
+
+class TestReviewRegressions(unittest.TestCase):
+    """One test per finding from the 2026-09-16 review. None of these may return."""
+
+    def test_rtf_generator_group_does_not_swallow_the_document(self):
+        r"""#1 -- `{\*\generator}` double-pushed the drop stack. Word emits it always."""
+        from puretext.formats import rtf
+        doc = rb"{\rtf1\ansi{\*\generator Riched20 10.0.19041;}\pard Body text here\par}"
+        self.assertEqual(rtf.extract_rtf(doc), "Body text here")
+
+    def test_rtf_starred_listtable_does_not_swallow_the_document(self):
+        from puretext.formats import rtf
+        self.assertEqual(rtf.extract_rtf(rb"{\rtf1{\*\listtable{\list x}}Body}"), "Body")
+
+    def test_html_meta_does_not_latch_the_skip_counter(self):
+        """#2 -- a void element in the skip set discarded every real web page."""
+        doc = ("<html><head><meta charset='utf-8'><title>t</title></head>"
+               "<body><p>Visible body</p></body></html>")
+        self.assertEqual(strip_html(doc), "Visible body")
+
+    def test_html_link_between_paragraphs_keeps_both(self):
+        self.assertEqual(strip_html("<p>a</p><link rel=x><p>b</p>").split("\n"), ["a", "b"])
+
+    def test_report_json_cannot_break_out_of_the_script_block(self):
+        """#3 -- `</script>` in a document's text was an XSS into the client's browser."""
+        import tempfile
+        from puretext.report import write_report
+        payload = "</script><img src=x onerror=alert(1)>"
+        rows = [{"file": "evil.pdf", "characters": 1, "v": payload, "text": payload}]
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "r.html")
+            write_report(rows, [], path)
+            doc = open(path, encoding="utf-8").read()
+        self.assertNotIn("</script><img", doc)
+        self.assertNotIn("<img src=x", doc)
+
+    def test_pdf_object_index_is_not_quadratic(self):
+        """#4 -- objects with no `endobj` sliced to end-of-file, n^2 in time and memory."""
+        import time
+        from puretext.formats import pdfcmap
+        crafted = b"%PDF-1.4\n" + b"".join(
+            f"{i} 0 obj\n<</X 1>>\n".encode() for i in range(20000))
+        start = time.time()
+        pdfcmap.build_object_index(crafted)
+        self.assertLess(time.time() - start, 3.0)
+
+    def test_pdf_flate_stream_is_capped(self):
+        """#5 -- the primary format was the one decompression path with no ceiling."""
+        import zlib
+        from puretext.formats import pdf
+        from puretext.limits import MAX_PDF_STREAM_BYTES
+        stream = zlib.compress(b"A" * (MAX_PDF_STREAM_BYTES * 4))
+        doc = (b"%PDF-1.4\n1 0 obj\n<< /Filter /FlateDecode /Length "
+               + str(len(stream)).encode() + b" >>\nstream\n" + stream
+               + b"\nendstream\nendobj\n%%EOF\n")
+        pdf.extract_pdf(doc)          # must return, not exhaust memory
+
+    def test_odd_length_hex_does_not_disable_every_font(self):
+        """#6 -- one malformed CMap entry made a whole readable PDF 'undecodable'."""
+        from puretext.formats import pdfcmap
+        parsed = pdfcmap._parse_cmap(
+            b"begincmap\n1 beginbfchar\n<041> <0042>\nendbfchar\nendcmap")
+        self.assertTrue(parsed)
+
+    def test_field_with_non_participating_group_does_not_abort_the_batch(self):
+        """#7 -- m.group(1) is None for `(a)|b`, and .strip() killed the whole run."""
+        import tempfile
+        from puretext.batch import Field, run
+        with tempfile.TemporaryDirectory() as d:
+            for name in ("a.txt", "b.txt"):
+                with open(os.path.join(d, name), "w", encoding="utf-8") as fh:
+                    fh.write("TOTAL DUE\n")
+            field = Field.parse(r"total=Total:\s*\$([0-9.]+)|TOTAL DUE")
+            results, _ = run([d], fields=[field])
+        self.assertEqual(len(results), 2)
+
+    def test_csv_formula_injection_is_neutralized(self):
+        """#8 -- untrusted text went straight into a spreadsheet the client opens."""
+        import csv as _csv
+        import tempfile
+        from puretext.batch import write_csv
+        rows = [{"file": "evil.pdf", "v": "=cmd|' /C calc'!A0"},
+                {"file": "b.pdf", "v": "@SUM(1+1)"}]
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "o.csv")
+            write_csv(rows, path, ["file", "v"])
+            values = [r["v"] for r in _csv.DictReader(open(path, encoding="utf-8"))]
+        self.assertTrue(all(v.startswith("'") for v in values))
+
+    def test_csv_with_an_enormous_field_still_returns_something(self):
+        """#9 -- csv.Error escaped and lost the file entirely."""
+        blob = "x" * 200000
+        out = extract(f"a,b\n1,{blob}\n".encode(), "big.csv")
+        self.assertTrue(out)
+
+    def test_html_uses_the_encoding_ladder(self):
+        """#10 -- cp1252 smart quotes became U+FFFD on every Windows-authored page."""
+        out = strip_html_bytes(b"<p>it\x92s here</p>")
+        self.assertIn("\u2019", out)
+
+    def test_zip_inside_a_scanned_folder_is_not_silently_dropped(self):
+        """#12 -- an archive found by walking produced no row and no exception."""
+        import tempfile
+        from puretext.batch import run
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "a.txt"), "w", encoding="utf-8") as fh:
+                fh.write("plain")
+            with zipfile.ZipFile(os.path.join(d, "bundle.zip"), "w") as zf:
+                zf.writestr("inner.txt", "inside the archive")
+            results, exceptions = run([d])
+        texts = " ".join(r.get("text", "") for r in results)
+        self.assertIn("inside the archive", texts)
+
+    def test_recapture_after_a_document_changes_keeps_both(self):
+        """#13 -- the second capture overwrote the first and broke --verify."""
+        import tempfile
+        from puretext.provenance import Workspace
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(d, "a.txt")
+            with open(src, "w", encoding="utf-8") as fh:
+                fh.write("one")
+            ws = Workspace(os.path.join(d, "case"))
+            ws.create("0.2.0", [d])
+            ws.capture("a.txt", "one", source_path=src)
+            with open(src, "w", encoding="utf-8") as fh:
+                fh.write("two")
+            ws.capture("a.txt", "two", source_path=src)
+            manifest = ws.load()
+            self.assertEqual(len(manifest["documents"]), 2)
+            self.assertEqual(len({x["original"] for x in manifest["documents"]}), 2)
+            self.assertEqual(ws.verify(), [])
+            ws.capture("a.txt", "two", source_path=src)      # idempotent
+            self.assertEqual(len(ws.load()["documents"]), 2)
+
+    def test_deeply_nested_json_falls_back_to_raw_text(self):
+        """#14 -- RecursionError escaped instead of the documented fallback."""
+        out = extract(b"[" * 3000, "deep.json")
+        self.assertTrue(out)
+
+
+def strip_html_bytes(data):
+    from puretext.formats.markup import extract_html
+    return extract_html(data)
+
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

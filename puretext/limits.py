@@ -31,12 +31,42 @@ MAX_ARCHIVE_BYTES = 1024 * 1024 * 1024      # 1 GB
 # bomb rather than a document. Text compresses well, so the threshold is high.
 MAX_COMPRESSION_RATIO = 200
 
+# One Flate stream inside a PDF may not expand past this. A PDF stream carries
+# no declared output size, so unlike a zip member it cannot be vetted up front
+# -- it has to be decompressed with a ceiling. Measured before this existed: a
+# 305 KB PDF expanded one stream to 616 MB of resident memory in 0.4 s.
+# Peak memory runs to roughly TWICE this, because the inflated buffer is
+# copied once during processing. Measured: a 597 KB bomb declaring 600 MB
+# peaked at 274 MB against a 128 MB cap, so the cap is set at 64 MB to keep
+# the worst case near 128 MB. 64 MB of text from one content stream is still
+# roughly 64 million characters -- far beyond any real document.
+MAX_PDF_STREAM_BYTES = 64 * 1024 * 1024     # 64 MB
+
 
 class ArchiveTooLarge(Exception):
     """An archive member exceeded a size or compression-ratio limit.
 
     Raised before allocating, so hitting this costs nothing.
     """
+
+
+def bounded_inflate(raw, limit=None):
+    """zlib-inflate `raw`, refusing to produce more than `limit` bytes.
+
+    Returns (data, truncated). Uses the incremental decompressor with a max
+    length, because zlib.decompress() has no ceiling and will happily allocate
+    whatever the stream describes.
+    """
+    import zlib
+
+    limit = MAX_PDF_STREAM_BYTES if limit is None else limit
+    obj = zlib.decompressobj()
+    try:
+        data = obj.decompress(raw, limit)
+    except zlib.error:
+        return None, False
+    # unconsumed_tail is non-empty exactly when the limit stopped us early.
+    return data, bool(obj.unconsumed_tail)
 
 
 class Budget:

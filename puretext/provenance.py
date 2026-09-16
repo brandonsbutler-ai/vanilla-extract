@@ -32,6 +32,8 @@ import json
 import os
 import shutil
 
+from .batch import csv_safe
+
 MANIFEST = "manifest.json"
 _SCHEMA = 1
 
@@ -56,8 +58,14 @@ def sha256_file(path, chunk=1 << 20):
     return h.hexdigest()
 
 
-def _safe_member(name):
+def _safe_member(name, content_hash=None):
     """A readable, unique, escape-proof filename for an archived document.
+
+    When `content_hash` is supplied the name becomes CONTENT-addressed, so
+    re-capturing the same label with different bytes lands in a different
+    file rather than overwriting the first. That is what keeps the
+    append-only guarantee true when a folder is re-scanned after its
+    documents have changed.
 
     Source labels are arbitrary: absolute paths, '..' segments, archive members
     with embedded separators. Flattening the whole path is safe but produces
@@ -70,7 +78,8 @@ def _safe_member(name):
     base = parts[-1] if parts else "document"
     base = "".join(c if (c.isalnum() or c in "._- ") else "_" for c in base).strip()
     base = base or "document"
-    digest = hashlib.sha256(name.encode("utf-8")).hexdigest()[:8]
+    digest = (content_hash
+              or hashlib.sha256(name.encode("utf-8")).hexdigest())[:8]
     stem, dot, ext = base.rpartition(".")
     if dot and len(ext) <= 8:
         return f"{stem[:120]}_{digest}.{ext}"
@@ -123,24 +132,39 @@ class Workspace:
                 copy_original=True):
         """Record one document: its original, what was read, and both hashes."""
         manifest = self.load()
-        member = _safe_member(label)
+
+        # Hash the content BEFORE choosing a filename. Naming by label alone
+        # meant a second capture of the same label overwrote the first, so
+        # re-running a batch over an updated folder silently rewrote history
+        # and then failed the workspace's own --verify.
+        payload = text.encode("utf-8")
+        if source_path and os.path.isfile(source_path):
+            content_hash = sha256_file(source_path)
+        elif source_bytes is not None:
+            content_hash = sha256_bytes(source_bytes)
+        else:
+            content_hash = sha256_bytes(payload)
+        member = _safe_member(label, content_hash)
+
+        existing = self._already_captured(manifest, label, content_hash)
+        if existing is not None:
+            return existing          # same label, same bytes: nothing new
 
         original_rel, original_hash = None, None
         if source_path and os.path.isfile(source_path):
-            original_hash = sha256_file(source_path)
+            original_hash = content_hash
             if copy_original:
                 dest = os.path.join(self.originals, member)
                 shutil.copy2(source_path, dest)
                 original_rel = os.path.relpath(dest, self.root)
         elif source_bytes is not None:
-            original_hash = sha256_bytes(source_bytes)
+            original_hash = content_hash
             if copy_original:
                 dest = os.path.join(self.originals, member)
                 with open(dest, "wb") as fh:
                     fh.write(source_bytes)
                 original_rel = os.path.relpath(dest, self.root)
 
-        payload = text.encode("utf-8")
         ext_path = os.path.join(self.extracted, member + ".txt")
         with open(ext_path, "wb") as fh:
             fh.write(payload)
@@ -158,6 +182,14 @@ class Workspace:
         self._write(manifest)
         return entry
 
+    @staticmethod
+    def _already_captured(manifest, label, content_hash):
+        """The existing entry for this exact label and these bytes, or None."""
+        for doc in manifest["documents"]:
+            if doc["label"] == label and doc.get("original_sha256") == content_hash:
+                return doc
+        return None
+
     # -- revisions ---------------------------------------------------------
     def add_revision(self, rows, columns, note="", key="file"):
         """Append a corrected table and record its diff against the previous one.
@@ -174,7 +206,7 @@ class Workspace:
             writer = csv.DictWriter(fh, fieldnames=columns, extrasaction="ignore")
             writer.writeheader()
             for row in rows:
-                writer.writerow(row)
+                writer.writerow({k: csv_safe(v) for k, v in row.items()})
 
         previous = self._previous_rows(manifest, key)
         changes = _diff_rows(previous, rows, columns, key) if previous is not None else []

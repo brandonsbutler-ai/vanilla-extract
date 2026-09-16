@@ -216,7 +216,7 @@ def main(argv=None):
                         print(json.dumps({"file": path, "member": name,
                                           "chars": len(text), "text": text}))
                     else:
-                        _emit_text(f"{path}!{name}", text, show_headers or True)
+                        _emit_text(f"{path}!{name}", text, not args.quiet)
                 continue
 
             text = extract_file(path)

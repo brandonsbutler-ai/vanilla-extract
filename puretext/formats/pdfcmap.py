@@ -25,6 +25,9 @@ import re
 import zlib
 
 _OBJ_RE = re.compile(rb"(\d+)\s+(\d+)\s+obj\b")
+
+# A single PDF object holding more than this is not a font or a CMap.
+MAX_OBJECT_BYTES = 32 * 1024 * 1024
 _REF_RE = re.compile(rb"(\d+)\s+(\d+)\s+R\b")
 _TOUNICODE_RE = re.compile(rb"/ToUnicode\s+(\d+)\s+(\d+)\s+R")
 _FONT_RES_RE = re.compile(rb"/([A-Za-z0-9#+._-]+)\s+(\d+)\s+(\d+)\s+R")
@@ -56,10 +59,18 @@ def build_object_index(data):
     number wins, which approximates incremental-update semantics.
     """
     index = {}
-    for m in _OBJ_RE.finditer(data):
-        num = int(m.group(1))
-        end = data.find(b"endobj", m.end())
-        index[num] = data[m.end():end if end != -1 else len(data)]
+    # Bound each object by the NEXT object header as well as by `endobj`.
+    # Without the bound, an object missing its `endobj` slices to end-of-file,
+    # which is quadratic in both time and memory: 531 KB of crafted headers
+    # took 3 seconds, and 77 KB pushed resident memory to 168 MB.
+    starts = [(int(m.group(1)), m.end(), m.start()) for m in _OBJ_RE.finditer(data)]
+    for i, (num, body_start, _hdr_start) in enumerate(starts):
+        next_hdr = starts[i + 1][2] if i + 1 < len(starts) else len(data)
+        end = data.find(b"endobj", body_start, next_hdr)
+        stop = end if end != -1 else next_hdr
+        if stop - body_start > MAX_OBJECT_BYTES:
+            continue                  # not a real object; skip rather than slice
+        index[num] = data[body_start:stop]
 
     # Expand compressed object streams.
     for num, obj in list(index.items()):
@@ -132,7 +143,15 @@ def _parse_cmap(text):
     mapping = {}
 
     def to_str(hexstr):
-        """A bfchar target may be several UTF-16BE code units (a ligature)."""
+        """A bfchar target may be several UTF-16BE code units (a ligature).
+
+        Pad BEFORE converting: an odd number of hex digits raises ValueError
+        out of bytes.fromhex, which escaped _parse_cmap, was swallowed upstream
+        as "no CMaps", and made every subset font in the document decode to
+        glyph IDs -- turning one malformed entry into a whole unreadable PDF.
+        """
+        if len(hexstr) % 2:
+            hexstr += "0"
         raw = bytes.fromhex(hexstr)
         if len(raw) % 2:
             raw += b"\x00"
@@ -158,7 +177,10 @@ def _parse_cmap(text):
         for lo, hi, dst in re.findall(
                 rb"<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>", stripped):
             start, stop = int(lo, 16), int(hi, 16)
-            base = bytes.fromhex(dst.decode("ascii"))
+            hexdigits = dst.decode("ascii")
+            if len(hexdigits) % 2:
+                hexdigits += "0"
+            base = bytes.fromhex(hexdigits)
             if len(base) % 2:
                 base += b"\x00"
             base_cp = int.from_bytes(base[-2:], "big")

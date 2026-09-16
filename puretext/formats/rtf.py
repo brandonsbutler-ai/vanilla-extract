@@ -24,6 +24,19 @@ _BREAKS = {"par": "\n", "line": "\n", "tab": "\t", "page": "\n\n",
 _CONTROL = re.compile(r"\\([a-zA-Z]+)(-?\d+)? ?|\\'([0-9a-fA-F]{2})|\\(.)|([{}])|([^\\{}]+)")
 
 
+def _start_dropping(dropping, depth):
+    r"""Mark this group as discarded, at most once.
+
+    `{\*\generator Riched20;}` triggers the drop TWICE -- once for `\*` and
+    once for the `generator` control word -- but the single closing brace pops
+    only one entry. The leftover entry then discarded the rest of the file, so
+    every RTF written by Word, WordPad or RichEdit extracted as an empty
+    string. One entry per group is the invariant.
+    """
+    if not (dropping and dropping[-1] == depth):
+        dropping.append(depth)
+
+
 def extract_rtf(fh):
     data = fh.read() if hasattr(fh, "read") else fh
     text = data.decode("latin-1", errors="replace")
@@ -43,7 +56,7 @@ def extract_rtf(fh):
             continue
         if word:
             if word in _DROP_GROUPS:
-                dropping.append(depth)
+                _start_dropping(dropping, depth)
                 continue
             if not dropping and word in _BREAKS:
                 out.append(_BREAKS[word])
@@ -55,7 +68,7 @@ def extract_rtf(fh):
         elif escaped:
             if escaped == "*":
                 # \* introduces an ignorable destination.
-                dropping.append(depth)
+                _start_dropping(dropping, depth)
             elif escaped in ("{", "}", "\\"):
                 out.append(escaped)
             elif escaped == "\n":

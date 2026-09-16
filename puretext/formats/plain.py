@@ -39,7 +39,13 @@ def extract_csv(fh):
         dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
     except csv.Error:
         dialect = csv.excel
-    rows = csv.reader(io.StringIO(text), dialect)
+    try:
+        rows = list(csv.reader(io.StringIO(text), dialect))
+    except csv.Error:
+        # "field larger than field limit" on a legitimate file -- a base64 blob
+        # or a long notes column. The raw text is still useful; losing the file
+        # is not an acceptable alternative.
+        return text
     return "\n".join("\t".join(cell.strip() for cell in row) for row in rows if row)
 
 
@@ -60,8 +66,11 @@ def extract_json(fh):
     text = decode_text(data)
     try:
         parsed = json.loads(text)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, RecursionError):
         return text          # not valid JSON; the raw text is still useful
     out = []
-    _walk_json(parsed, "", out)
+    try:
+        _walk_json(parsed, "", out)
+    except RecursionError:
+        return text          # nested past the interpreter's limit
     return "\n".join(out)

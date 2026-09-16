@@ -111,6 +111,9 @@ document.getElementById('dlgclose')?.addEventListener('click',()=>dlg.close());
 
 function csvCell(s){
   s = (s ?? '').toString();
+  // Same formula-injection guard the Python writer applies: a cell starting
+  // = + - @ tab or CR is evaluated by Excel and Sheets.
+  if(/^[=+\\-@\\t\\r]/.test(s)) s = "'" + s;
   return /[",\\n]/.test(s) ? '"' + s.replace(/"/g,'""') + '"' : s;
 }
 document.getElementById('export')?.addEventListener('click',()=>{
@@ -129,6 +132,26 @@ document.getElementById('export')?.addEventListener('click',()=>{
 
 def _esc(value):
     return html.escape("" if value is None else str(value))
+
+
+def _json_for_script(data):
+    r"""JSON safe to interpolate into an inline <script> block.
+
+    json.dumps does not escape `</script>`, so a document containing that
+    string closes the block and everything after it is parsed as markup. The
+    report is built to be e-mailed to clients and carries all of their
+    extracted text, so this let a malicious document run script in the
+    reviewer's browser with the whole delivery in reach.
+
+    U+2028 and U+2029 are also escaped: both are line terminators in
+    JavaScript but legal inside a JSON string.
+    """
+    return (json.dumps(data)
+            .replace("<", "\\u003c")
+            .replace(">", "\\u003e")
+            .replace("&", "\\u0026")
+            .replace("\u2028", "\\u2028")
+            .replace("\u2029", "\\u2029"))
 
 
 def write_report(results, exceptions, path, columns=None, title="Extraction report",
@@ -197,7 +220,7 @@ def write_report(results, exceptions, path, columns=None, title="Extraction repo
 {exc_section}
 <dialog id="preview"><div class="dlghead"><strong id="dlgfile"></strong>
 <button id="dlgclose">Close</button></div><pre id="dlgtext"></pre></dialog>
-</div><script>{_JS.replace("__DOCS__", json.dumps(docs))}</script></body></html>"""
+</div><script>{_JS.replace("__DOCS__", _json_for_script(docs))}</script></body></html>"""
 
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(doc)

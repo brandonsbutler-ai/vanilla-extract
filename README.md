@@ -252,6 +252,9 @@ These were tested, not assumed:
 | **XXE (external entity)** | Not exploitable -- `xml.etree` does not resolve external entities. Verified against `file:///etc/passwd`. |
 | **Billion laughs** | Bounded. expat stops expanding a few levels in, capping the damage near 300 KB of text. Amplification, not denial of service. |
 | **Catastrophic backtracking** | None found. Every recognizer pattern and the RTF tokenizer stay linear on pathological input (5,000-character labels, 20,000 spaces, 50,000 control words). |
+| **CSV formula injection** | **Neutralized.** Extracted text went verbatim into a CSV the client opens in Excel, so a document containing `=cmd\|' /C calc'!A0` was a path to code execution on the reviewer's machine. Cells beginning `= + - @` tab or CR are now prefixed, in the Python writer and in the report's in-browser export. |
+| **XSS via the report** | **Fixed.** `json.dumps` does not escape `</script>`, so a document containing it closed the report's data block and the rest parsed as markup -- executing attacker script in a browser holding the client's entire delivery. `<`, `>`, `&`, U+2028 and U+2029 are now escaped in the embedded JSON. |
+| **PDF decompression bomb** | **Refused.** A 597 KB PDF expanded one Flate stream to 616 MB. Inflation is now bounded; peak stays near 128 MB. |
 | **Path traversal** | A source label containing `../` or an absolute path cannot escape a workspace; archived names are flattened to a basename plus a digest. |
 
 Limits are generous on purpose -- a real 300-page report is large and legitimate. The point is to
@@ -264,7 +267,7 @@ in 0.02 s.
 python3 -m unittest discover -s tests -v
 ```
 
-64 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
+79 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
 there is nothing opaque in the repo. The suite covers the cases that actually break extractors:
 balanced parens inside PDF strings, escaped close-parens, octal escapes, odd hex nibbles,
 RTF `\fonttbl` contents leaking into output, cp1252 fallback, and misnamed files -- plus the
