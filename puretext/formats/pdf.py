@@ -1,0 +1,285 @@
+r"""PDF text extraction with no third-party library.
+
+A PDF is a graph of objects; the visible text lives inside content streams,
+usually Flate-compressed, expressed as PostScript-ish operators. So the job is
+three steps:
+
+    1. find the streams                      (byte scanning)
+    2. decompress them                       (zlib, stdlib)
+    3. pull the arguments of the text-showing operators  (Tj TJ ' ")
+
+Step 3 needs a real tokenizer rather than a regex, because a PDF literal
+string may contain balanced parentheses and backslash escapes -- `(a (b) c)`
+is ONE string, and `(a\)b)` is one string containing a close paren. A regex
+gets both wrong, which is the usual reason a hand-rolled PDF reader returns
+truncated text.
+
+KNOWN LIMITS -- stated because a caller needs to know when to distrust output:
+  * No font/CMap decoding. Text drawn with a subset or CID-keyed font can come
+    back as the wrong characters. Simple fonts with WinAnsi/Standard encoding
+    (what most text-generating tools emit) read correctly.
+  * No OCR: a scanned page contains an image, not text, and yields nothing.
+  * Layout is approximated, not reconstructed. Multi-column pages interleave.
+"""
+
+import re
+import zlib
+
+from . import pdfcmap
+
+
+class EncryptedPDF(Exception):
+    """The PDF's streams are encrypted, so its text cannot be read.
+
+    Raised rather than returning "" because a silent empty result in a batch
+    job looks like an empty document, and the caller acts on that. Commercial
+    PDFs are routinely encrypted with an EMPTY user password purely to set
+    permission flags -- readable in any viewer, still encrypted on disk.
+    Decrypting them needs RC4 and AES, and AES is not in the standard library,
+    so it is out of scope for this tool by design.
+    """
+
+# Operators that draw text. Tj and TJ take the string(s) before them;
+# ' and " also imply a line break first.
+_SHOW_ONE = b"Tj"
+_SHOW_ARRAY = b"TJ"
+_SHOW_NEXTLINE = (b"'", b'"')
+
+# Operators that move the cursor to a new line, i.e. where we emit "\n".
+_NEWLINE_OPS = (b"Td", b"TD", b"T*", b"ET")
+
+_STREAM_RE = re.compile(rb"stream\r?\n?", re.DOTALL)
+
+
+def _iter_streams(data):
+    """Yield the raw bytes of every `stream ... endstream`, with its dict.
+
+    Scans rather than parsing the xref table on purpose: a damaged or
+    linearized xref is common in the wild, and the streams are still there.
+    """
+    pos = 0
+    while True:
+        m = _STREAM_RE.search(data, pos)
+        if not m:
+            return
+        # The object dictionary sits immediately before the `stream` keyword.
+        dict_start = data.rfind(b"<<", max(0, m.start() - 4096), m.start())
+        header = data[dict_start:m.start()] if dict_start != -1 else b""
+        end = data.find(b"endstream", m.end())
+        if end == -1:
+            return
+        yield header, data[m.end():end]
+        pos = end + len(b"endstream")
+
+
+def _decompress(header, raw):
+    """Return usable stream bytes, or None if this stream is not for us.
+
+    Images, fonts and metadata also live in streams; we let them fail the
+    decode or fall out later when no text operators are found.
+    """
+    if b"/FlateDecode" in header:
+        try:
+            return zlib.decompress(raw)
+        except zlib.error:
+            # Truncated or with junk after the deflate block -- salvage what
+            # decompressed before the error rather than dropping the page.
+            try:
+                d = zlib.decompressobj()
+                return d.decompress(raw)
+            except zlib.error:
+                return None
+    if b"/Filter" in header:
+        # DCTDecode (JPEG), CCITTFax, JBIG2, LZW and friends: not text we can
+        # reach without a codec. Skip rather than emit garbage.
+        return None
+    return raw
+
+
+def _read_literal_string(buf, i):
+    r"""Read a `(...)` string starting at buf[i] == '('. Returns (bytes, next_i).
+
+    Tracks paren depth and honours backslash escapes, including the \ooo
+    octal form. This is the part a regex cannot do.
+    """
+    assert buf[i:i + 1] == b"("
+    i += 1
+    depth = 1
+    out = bytearray()
+    while i < len(buf):
+        c = buf[i:i + 1]
+        if c == b"\\":
+            nxt = buf[i + 1:i + 2]
+            simple = {b"n": b"\n", b"r": b"\r", b"t": b"\t", b"b": b"\b",
+                      b"f": b"\f", b"(": b"(", b")": b")", b"\\": b"\\"}
+            if nxt in simple:
+                out += simple[nxt]
+                i += 2
+            elif nxt.isdigit():
+                octal = b""
+                j = i + 1
+                while j < len(buf) and len(octal) < 3 and buf[j:j + 1].isdigit():
+                    octal += buf[j:j + 1]
+                    j += 1
+                try:
+                    out.append(int(octal, 8) & 0xFF)
+                except ValueError:
+                    pass
+                i = j
+            elif nxt in (b"\n", b"\r"):
+                # Backslash-newline is a line continuation: emit nothing.
+                i += 2
+            else:
+                out += nxt
+                i += 2
+            continue
+        if c == b"(":
+            depth += 1
+            out += c
+        elif c == b")":
+            depth -= 1
+            if depth == 0:
+                return bytes(out), i + 1
+            out += c
+        else:
+            out += c
+        i += 1
+    return bytes(out), i
+
+
+def _read_hex_string(buf, i):
+    """Read a `<48656C>` hex string. Returns (bytes, next_i)."""
+    assert buf[i:i + 1] == b"<"
+    end = buf.find(b">", i + 1)
+    if end == -1:
+        return b"", len(buf)
+    digits = re.sub(rb"[^0-9A-Fa-f]", b"", buf[i + 1:end])
+    if len(digits) % 2:
+        digits += b"0"          # spec says pad a trailing odd nibble with 0
+    try:
+        return bytes.fromhex(digits.decode("ascii")), end + 1
+    except ValueError:
+        return b"", end + 1
+
+
+def _decode_string(raw, cmap=None):
+    """Bytes of a PDF string -> str, through a /ToUnicode CMap when there is one.
+
+    Without a CMap, latin-1 is the pragmatic choice: it maps WinAnsiEncoding's
+    low range correctly and never raises, so a surprising byte degrades to a
+    wrong character instead of losing the whole page.
+    """
+    if cmap:
+        mapped = pdfcmap.decode_with_cmap(raw, cmap)
+        if mapped is not None:
+            return mapped
+    return raw.decode("latin-1", errors="replace")
+
+
+def _extract_content(buf, cmaps=None):
+    """Pull text out of one decompressed content stream, in drawing order.
+
+    `cmaps` maps font resource names to /ToUnicode tables. When the active
+    font has one, string bytes are glyph codes and must be translated through
+    it; without one, the bytes are an 8-bit encoding and decode directly.
+    """
+    cmaps = cmaps or {}
+    out = []
+    pending = []          # strings collected since the last operator
+    active = None         # CMap of the font selected by the last Tf
+    last_name = None      # most recent /Name, which Tf consumes
+    i = 0
+    n = len(buf)
+    while i < n:
+        c = buf[i:i + 1]
+        if c == b"(":
+            s, i = _read_literal_string(buf, i)
+            pending.append(_decode_string(s, active))
+            continue
+        if c == b"<" and buf[i + 1:i + 2] != b"<":
+            s, i = _read_hex_string(buf, i)
+            pending.append(_decode_string(s, active))
+            continue
+        if c == b"/":
+            # A name object: remember it in case the next operator is Tf.
+            j = i + 1
+            while j < n and (buf[j:j + 1].isalnum() or buf[j:j + 1] in b"+-._#"):
+                j += 1
+            last_name = buf[i + 1:j].decode("latin-1")
+            i = j
+            continue
+        if c.isalpha() or c in (b"'", b'"'):
+            j = i
+            while j < n and (buf[j:j + 1].isalpha() or buf[j:j + 1] in (b"*", b"'", b'"')):
+                j += 1
+            op = buf[i:j]
+            if op == b"Tf":
+                # `/F2 11 Tf` selects font F2; its CMap governs every string
+                # drawn until the next Tf.
+                if last_name is not None:
+                    active = cmaps.get(last_name) or cmaps.get("*")
+                pending = []
+                i = j
+                continue
+            if op in (_SHOW_ONE, _SHOW_ARRAY) or op in _SHOW_NEXTLINE:
+                if op in _SHOW_NEXTLINE and out and not out[-1].endswith("\n"):
+                    out.append("\n")
+                out.append("".join(pending))
+                pending = []
+            elif op in _NEWLINE_OPS:
+                pending = []
+                if out and not out[-1].endswith("\n"):
+                    out.append("\n")
+            else:
+                pending = []
+            i = j if j > i else i + 1
+            continue
+        i += 1
+    return "".join(out)
+
+
+def _is_encrypted(data):
+    """True when the trailer names an /Encrypt dictionary.
+
+    Checked against the trailer rather than the whole file so that the literal
+    string "/Encrypt" appearing inside a content stream cannot cause a false
+    positive on a perfectly readable document.
+    """
+    tail = data[-4096:] if len(data) > 4096 else data
+    if re.search(rb"/Encrypt\s+\d+\s+\d+\s+R", tail):
+        return True
+    # Cross-reference streams put the trailer dict at the front of the xref
+    # object, which may sit anywhere; fall back to a bounded global check.
+    return bool(re.search(rb"trailer.{0,2048}?/Encrypt", data, re.DOTALL))
+
+
+def extract_pdf(fh):
+    """Text of a PDF, page order preserved as far as stream order allows."""
+    data = fh.read() if hasattr(fh, "read") else fh
+    if not data.startswith(b"%PDF"):
+        # Some files carry junk before the header; find it rather than refuse.
+        idx = data.find(b"%PDF")
+        if idx > 0:
+            data = data[idx:]
+    if _is_encrypted(data):
+        raise EncryptedPDF(
+            "encrypted PDF (standard security handler); text is not readable "
+            "without decryption, which this library does not implement")
+    try:
+        cmaps = pdfcmap.font_cmaps(data)
+    except Exception:                      # noqa: BLE001
+        # A malformed font table must not cost us the document's text.
+        cmaps = {}
+    pages = []
+    for header, raw in _iter_streams(data):
+        body = _decompress(header, raw)
+        if not body:
+            continue
+        if b"Tj" not in body and b"TJ" not in body:
+            continue          # not a text-bearing content stream
+        text = _extract_content(body, cmaps)
+        if text.strip():
+            pages.append(text)
+    joined = "\n".join(pages)
+    # Collapse the runs of blank lines that line-positioning operators create.
+    return re.sub(r"\n{3,}", "\n\n", joined).strip()
