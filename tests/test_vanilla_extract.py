@@ -569,17 +569,84 @@ class TestHostileInput(unittest.TestCase):
             return
         self.assertLess(len(out), 5 * 1024 * 1024)
 
-    def test_no_catastrophic_backtracking_in_recognizers(self):
+    def test_recognizers_do_not_go_quadratic_on_a_near_miss(self):
+        """Growth, not wall-clock: a quadratic pattern passes any loose budget.
+
+        The old version of this test allowed 5 seconds for four inputs and one
+        of those inputs was `("AB-" * 4000) + "1"` -- which ENDS IN A DIGIT, so
+        the identifier lookahead succeeded and the match completed immediately.
+        The shape that broke it is the same run with NO digit, which took 8.8
+        seconds on 64 KB, and a run of email-legal characters with no `@`, which
+        took 1.2 seconds. Neither was in the corpus.
+
+        Doubling the input doubles a linear pattern's time and quadruples a
+        quadratic one, so the ratio is the assertion. The absolute times are
+        left out of it: those move with the machine, the ratio does not.
+        """
         import time
-        from vanilla_extract.recognize import DETECTORS, label_values
-        hostile = [("A" * 5000) + ": v", "L" + (" " * 20000) + "v",
-                   "$" + ("1," * 4000) + "00", ("AB-" * 4000) + "1"]
-        start = time.time()
-        for text in hostile:
-            label_values(text)
-            for _, regex in DETECTORS:
-                regex.search(text)
-        self.assertLess(time.time() - start, 5.0)
+        from vanilla_extract.recognize import DETECTORS, _detector
+        shapes = {
+            "uppercase hyphen run, no digit": lambda n: "AB" + "-AB" * (n // 3),
+            "email-legal run, no at sign":    lambda n: "a.b-c_d" * (n // 7),
+            "digits and commas, no currency": lambda n: "1," * (n // 2),
+            "spaces":                         lambda n: " " * n,
+            "dots":                           lambda n: "." * n,
+        }
+        for label, make in shapes.items():
+            for name, regex, _ok in map(_detector, DETECTORS):
+                times = []
+                for n in (8000, 16000, 32000):
+                    text = make(n)
+                    start = time.perf_counter()
+                    regex.search(text)
+                    times.append(time.perf_counter() - start)
+                slowest = max(times)
+                if slowest < 0.002:
+                    continue          # too fast to time; nothing to conclude
+                ratio = max(times[i + 1] / times[i]
+                            for i in range(len(times) - 1) if times[i] > 0)
+                self.assertLess(
+                    ratio, 3.0,
+                    f"{name} grows {ratio:.1f}x per doubling on {label!r} "
+                    f"({slowest * 1000:.0f} ms at 32k) -- linear is ~2x")
+
+    def test_rtf_whitespace_cleanup_is_linear(self):
+        """`[ \\t]+\\n` restarted at every blank: 1.9 s on 64 KB of spaces.
+
+        An RTF file can contain a long run of blanks with no newline after it,
+        and the cleanup pass walked the whole run, failed, and began again one
+        character later.
+        """
+        import time
+        from vanilla_extract.formats.rtf import extract_rtf
+        times = []
+        for n in (16000, 32000, 64000):
+            doc = (r"{\rtf1\ansi " + " " * n + "text}").encode()
+            start = time.perf_counter()
+            self.assertEqual(extract_rtf(doc), "text")
+            times.append(time.perf_counter() - start)
+        if max(times) > 0.002:
+            ratio = max(times[i + 1] / times[i] for i in range(2) if times[i] > 0)
+            self.assertLess(ratio, 3.0,
+                            f"whitespace cleanup grows {ratio:.1f}x per doubling")
+
+    def test_an_identifier_must_contain_a_digit(self):
+        """`AB-Z--0911` returned `AB-Z`, which has no digit in it.
+
+        The requirement was written as the lookahead (?=[A-Z0-9-]*\\d), whose
+        character class includes the hyphen -- so it scanned past a double
+        hyphen to a digit the match itself can never reach, because each
+        `-[A-Z0-9]+` needs a character after its hyphen.
+        """
+        from vanilla_extract.recognize import classify, find_values
+        for value in ("AB-Z--0911", "REF-NO--2026", "ALL-CAPS--7"):
+            self.assertEqual(classify(value), "text",
+                             f"{value!r} classified as an identifier")
+        self.assertEqual(
+            find_values("see INV-4471 and REF-NO--2026 and PO-77", "identifier"),
+            ["INV-4471", "PO-77"])
+        for value in ("INV-4471", "PO-2026-118", "X1-Y2"):
+            self.assertEqual(classify(value), "identifier")
 
 
 class TestReviewRegressions(unittest.TestCase):

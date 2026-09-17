@@ -30,8 +30,21 @@ from collections import Counter, defaultdict
 
 # --- typed value detectors -------------------------------------------------
 # Ordered most-specific first; the first match wins when classifying a value.
+#
+# Each entry is (name, regex) or (name, regex, predicate). The predicate is
+# applied to the matched TEXT and exists for one reason: a condition expressed
+# as a lookahead is re-evaluated at every starting position, and one of these
+# was costing O(n^2) -- 8.8 seconds on 64 KB of uppercase hyphenated text with
+# no digit in it, which is a document anyone can hand you.
 DETECTORS = [
-    ("email", re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")),
+    # The lengths are RFC 5321's (64-character local part, 255-character
+    # domain) and they are here for speed as much as correctness: an unbounded
+    # [A-Za-z0-9._%+-]+ before a literal @ walks the whole of any long run of
+    # those characters, fails, and restarts one position later -- 1.2 seconds on
+    # 64 KB of hyphenated text with no @ in it. Bounded, the same input is 4 ms,
+    # and the two agree on every one of 30,000 compared strings.
+    ("email", re.compile(
+        r"\b[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,255}\.[A-Za-z]{2,}\b")),
     ("url", re.compile(r"\bhttps?://[^\s<>\"]+", re.IGNORECASE)),
     ("money", re.compile(r"(?<![\w.])[$£€]\s?\d{1,3}(?:,\d{3})*(?:\.\d{2})?(?![\w])")),
     ("date_iso", re.compile(r"\b\d{4}-\d{2}-\d{2}\b")),
@@ -41,8 +54,16 @@ DETECTORS = [
         r"October|November|December)\s+\d{1,2},?\s+\d{4}\b")),
     ("phone_us", re.compile(r"(?<!\d)(?:\+1[\s.-]?)?\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}(?!\d)")),
     ("percent", re.compile(r"(?<![\w.])\d{1,3}(?:\.\d+)?\s?%")),
-    # Identifier-shaped: at least one digit and one separator or capital run.
-    ("identifier", re.compile(r"\b(?=[A-Z0-9-]*\d)[A-Z0-9]{2,}(?:-[A-Z0-9]+)+\b")),
+    # Identifier-shaped: a hyphen-separated run of capitals and digits, with at
+    # least one digit IN THE MATCH.
+    #
+    # That condition used to be the lookahead (?=[A-Z0-9-]*\d), which was wrong
+    # twice over. It scanned through a double hyphen to find a digit the match
+    # can never reach -- `AB-Z--0911` was classified an identifier and the value
+    # returned was `AB-Z`, with no digit in it at all -- and because a lookahead
+    # is retried at every start position it turned the search quadratic.
+    ("identifier", re.compile(r"\b[A-Z0-9]{2,}(?:-[A-Z0-9]+)+\b"),
+     lambda t: any(c.isdigit() for c in t)),
 ]
 
 # Labels this module will not propose as columns: page furniture, not data.
@@ -62,20 +83,32 @@ def normalize_label(label):
     return label.lower()
 
 
+def _detector(entry):
+    """(name, regex, predicate) from an entry written either way."""
+    name, regex = entry[0], entry[1]
+    return name, regex, (entry[2] if len(entry) > 2 else None)
+
+
 def classify(value):
     """Name the kind of value this is, or 'text' when nothing matches."""
-    for name, regex in DETECTORS:
-        m = regex.search(value)
-        if m and len(m.group(0)) >= len(value.strip()) * 0.6:
-            return name
+    for entry in DETECTORS:
+        name, regex, ok = _detector(entry)
+        for m in regex.finditer(value):
+            if ok and not ok(m.group(0)):
+                continue
+            if len(m.group(0)) >= len(value.strip()) * 0.6:
+                return name
+            break
     return "text"
 
 
 def find_values(text, kind):
     """Every value of one detected kind, in document order."""
-    for name, regex in DETECTORS:
+    for entry in DETECTORS:
+        name, regex, ok = _detector(entry)
         if name == kind:
-            return [m.group(0) for m in regex.finditer(text)]
+            return [m.group(0) for m in regex.finditer(text)
+                    if not ok or ok(m.group(0))]
     raise KeyError(f"no detector named {kind!r}")
 
 

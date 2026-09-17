@@ -136,9 +136,9 @@ Three layers, because they catch different things.
 
 | Layer | What it is | What it catches |
 |---|---|---|
-| **Unit tests** (100) | `python3 -m unittest discover -s tests` | Logic errors in one function, and every past bug as a regression test |
+| **Unit tests** (102) | `python3 -m unittest discover -s tests` | Logic errors in one function, and every past bug as a regression test |
 | **Benchmark** | `python3 benchmark.py <dir>` | Extraction *quality*, scored against an independent implementation |
-| **End-to-end verification** (175 checks) | `python3 verify_e2e.py` | Whether the product does what its documentation says |
+| **End-to-end verification** (176 checks) | `python3 verify_e2e.py` | Whether the product does what its documentation says |
 
 The third layer is the unusual one. Unit tests check units; they cannot tell you the README is
 wrong. `verify_e2e.py` generates a fresh corpus in every supported format, drives the real
@@ -234,7 +234,7 @@ definition. These were tested, not assumed:
 | PDF decompression bomb | **Refused.** Inflation is bounded; a 597 KB file declaring 600 MB peaks near 128 MB instead of 616 MB. |
 | XXE (external entity) | Not exploitable. Verified against `file:///etc/passwd`. |
 | Billion laughs | Bounded by the XML parser a few levels in. Amplification, not denial of service. |
-| Catastrophic backtracking | None found. Recognizer patterns and the RTF tokenizer stay linear on 5,000-character labels, 20,000 spaces, 50,000 control words. |
+| Catastrophic backtracking | **Three patterns were quadratic and are fixed.** See *What an audit of the patterns found* below. Every regex in the package is now measured for growth rather than asserted to be linear. |
 | Spreadsheet formula injection | **Neutralized.** A document containing `=cmd\|' /C calc'!A0` would otherwise execute when the client opened the CSV. Cells leading with `= + - @` tab or CR are prefixed, in both the file writer and the report's in-browser export. |
 | Script injection into the report | **Fixed.** `</script>` inside a document's text closed the report's data block. Now escaped. |
 | Path traversal | A source label containing `../` or an absolute path cannot escape a workspace. |
@@ -252,6 +252,39 @@ process. Here is what these checks actually caught.
 
 **An independent code review found 15 defects. Two were critical:**
 
+### What an audit of the patterns found (2026-09-16)
+
+The documentation said every recognizer pattern and the RTF tokenizer stayed linear on
+pathological input, and listed the inputs: 5,000-character labels, 20,000 spaces, 50,000 control
+words. Three patterns were quadratic, and the corpus could not have shown it.
+
+| Pattern | Input | Before | After |
+|---|---|---|---|
+| `(?=[A-Z0-9-]*\d)[A-Z0-9]{2,}(?:-[A-Z0-9]+)+` | 64 KB of `AB-AB-AB...`, no digit | 8,836 ms | 1.9 ms |
+| `[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}` | 64 KB of `a.b-c_d...`, no `@` | 1,243 ms | 3.7 ms |
+| `[ \t]+\n` in the RTF cleanup | 64 KB of spaces, no newline | 1,948 ms | 0.02 ms |
+
+All three are the same shape: a quantified character class, then a literal that is not in the
+class. The pattern consumes the whole run, fails to find the literal, and starts again one
+character later -- n starting positions, each scanning O(n).
+
+**The old corpus could not reach any of them.** `("AB-" * 4000) + "1"` ends in a digit, so the
+lookahead succeeded and the match completed at once. The email fixtures contained an `@`. The
+whitespace fixtures contained newlines. Every input allowed its pattern to finish, which is the
+one thing a backtracking test must not do. The budget was also wrong in kind: 5 seconds for four
+inputs passes a quadratic pattern comfortably.
+
+The identifier lookahead was wrong a second way. `[A-Z0-9-]` includes the hyphen, so it scanned
+past a double hyphen to a digit the match can never reach -- `AB-Z--0911` was classified an
+identifier and the value returned was `AB-Z`, which contains no digit at all. The requirement now
+applies to the matched text, and agrees with the old pattern on every one of 20,024 compared
+strings except the twelve of that shape, where the old one was wrong.
+
+Growth is now the assertion, in `verify_e2e.py` and in the unit suite: every regex literal in the
+package is run against long runs of the characters its own leading class accepts, at three sizes,
+and the check fails above 3x per doubling. A wall-clock budget moves with the machine; the ratio
+does not.
+
 - RTF: `{\*\generator}` -- a group Word, WordPad and RichEdit write into *every* file -- caused
   the rest of the document to be discarded. Essentially all real-world RTF returned an empty
   string. The existing unit test used a simpler construct and passed.
@@ -264,7 +297,7 @@ unbounded decompression path in the primary format; quadratic time and memory on
 one malformed character-map entry rendering an entire readable PDF undecodable; a field pattern
 that aborted a whole batch; a re-scan that overwrote its own audit trail; an archive that
 vanished without appearing in either output table; and a stray line in the test file that made
-running it directly execute 29 of 100 tests and exit zero.
+running it directly execute 29 of the 64 then in the suite, and exit zero.
 
 **The end-to-end verifier then caught two more, including one in the documentation:**
 
@@ -296,7 +329,7 @@ Every one of those is now a named regression test.
   name for two different fonts on different pages can decode one of them wrong.
 - **Encryption is detected, never bypassed.** This tool will not help you read a document you do
   not have the password for.
-- **175 passing checks means the documented claims hold today, on this machine, for these
+- **176 passing checks means the documented claims hold today, on this machine, for these
   inputs.** It does not mean the tool is free of defects. The review above found 15 after the
   unit tests were green.
 
@@ -308,8 +341,8 @@ Every one of those is now a named regression test.
 git clone https://github.com/brandonsbutler-ai/vanilla-extract
 cd vanilla_extract
 
-python3 -m unittest discover -s tests -v    # 100 unit tests
-python3 verify_e2e.py                       # 175 end-to-end claim checks
+python3 -m unittest discover -s tests -v    # 102 unit tests
+python3 verify_e2e.py                       # 176 end-to-end claim checks
 python3 benchmark.py /path/to/your/pdfs     # quality against pdftotext
 ```
 

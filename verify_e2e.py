@@ -1081,6 +1081,62 @@ def verify_documentation(workdir):
               f"PDF says {sorted(in_pdf)}, VALIDATION says "
               f"{sorted(STATED_CHECK_COUNTS.get('VALIDATION', []))}")
 
+    # Every regex literal in the package, against long runs of the characters
+    # its own leading class accepts but WITHOUT the literal that lets it finish.
+    # That shape -- walk the run, fail, restart one character later -- made
+    # three patterns quadratic: 8.8 s on 64 KB of uppercase hyphenated text with
+    # no digit, 1.2 s on 64 KB of email-legal characters with no @, and 1.9 s on
+    # 64 KB of spaces with no newline. The documentation said all of them were
+    # linear, because the corpus that "proved" it contained a digit, an @ and a
+    # newline. Growth is the assertion: doubling the input doubles a linear
+    # pattern and quadruples a quadratic one, and the ratio does not move with
+    # the machine the way a wall-clock budget does.
+    import ast as _ast, string as _string, time as _time
+    _alphabets = (
+        _string.ascii_letters + _string.digits + "._%+-",
+        _string.ascii_uppercase + _string.digits + "-",
+        "0123456789,.", " \t", "\n", "\\b", "{}", "abc/0123456789",
+    )
+    _pats = []
+    for _root, _dirs, _files in os.walk(os.path.join(ROOT, "vanilla_extract")):
+        _dirs[:] = [d for d in _dirs if d != "__pycache__"]
+        for _f in sorted(_files):
+            if not _f.endswith(".py"):
+                continue
+            _tree = _ast.parse(open(os.path.join(_root, _f), encoding="utf-8").read())
+            for _n in _ast.walk(_tree):
+                if isinstance(_n, _ast.Call) and _n.args:
+                    _fn = _ast.unparse(_n.func).split(".")[-1]
+                    _a = _n.args[0]
+                    if (_fn in ("compile", "search", "match", "fullmatch", "sub",
+                                "findall", "finditer", "split")
+                            and isinstance(_a, _ast.Constant)
+                            and isinstance(_a.value, str) and len(_a.value) > 1):
+                        _pats.append((_f, _n.lineno, _a.value))
+    _slow = []
+    for _f, _ln, _pat in _pats:
+        try:
+            _c = _re.compile(_pat)
+        except _re.error:
+            continue
+        for _alpha in _alphabets:
+            _t = []
+            for _n2 in (8000, 16000, 32000):
+                _s = (_alpha * (_n2 // len(_alpha) + 1))[:_n2]
+                _t0 = _time.perf_counter()
+                try:
+                    _c.search(_s)
+                except Exception:
+                    pass
+                _t.append(_time.perf_counter() - _t0)
+            if max(_t) < 0.002:
+                continue
+            _ratio = max(_t[i + 1] / _t[i] for i in range(2) if _t[i] > 0)
+            if _ratio >= 3.0:
+                _slow.append(f"{_f}:{_ln} grows {_ratio:.1f}x -- {_pat[:44]}")
+    check(f"no regex in the package grows superlinearly ({len(_pats)} tested)",
+          not _slow, _slow)
+
     # An option with no help text is undocumented wherever else it appears.
     nohelp = sorted(a.option_strings[0] for a in build_parser()._actions
                     if a.option_strings and not a.help
