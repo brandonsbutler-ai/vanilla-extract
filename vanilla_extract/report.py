@@ -61,6 +61,9 @@ td.edited{background:color-mix(in srgb,var(--accent) 12%,transparent)}
 tr:last-child td{border-bottom:none}
 .file{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;
       max-width:280px;overflow-wrap:anywhere}
+.nofields{display:inline-block;border-radius:20px;padding:1px 8px;margin-right:6px;
+      font-size:11px;background:var(--warnbg);color:var(--warn);white-space:nowrap;
+      border:1px solid transparent;cursor:help}
 .view{cursor:pointer;color:var(--accent);text-decoration:underline;
       background:none;border:none;padding:0;font-size:12px}
 h2{font-size:15px;margin:0 0 9px}
@@ -126,7 +129,11 @@ document.getElementById('export')?.addEventListener('click',()=>{
     .map(th=>csvCell(th.dataset.col ?? th.textContent.trim())).join(',');
   const rows=[head, ...[...document.querySelectorAll('#results tr')].map(tr=>
     [...tr.children].filter(c=>!c.classList.contains('noexport'))
-      .map(c=>csvCell(c.innerText.trim())).join(','))];
+      // dataset.full carries the document's full path where the cell shows
+      // only its name. Exporting what is displayed would write basenames into
+      // the corrected CSV, and --import-csv matches a revision to its
+      // originals by path -- so the whole table would fail to match.
+      .map(c=>csvCell((c.dataset.full ?? c.innerText).trim())).join(','))];
   const blob=new Blob([rows.join('\\n')],{type:'text/csv'});
   const a=document.createElement('a');
   a.href=URL.createObjectURL(blob);
@@ -175,14 +182,40 @@ def write_report(results, exceptions, path, columns=None, title="Extraction repo
             for r in results]
 
     head = "".join(f'<th data-col="{_esc(c)}">{_esc(c)}</th>' for c in columns)
+
+    # Columns the tool computed rather than read out of the document. Making
+    # them editable invites a reviewer to correct a number the tool derived,
+    # and the correction then travels into the exported CSV as though it were
+    # a value from the document.
+    derived = {"file", "characters"}
+    value_columns = [c for c in columns if c not in derived]
+
     body = []
     for i, row in enumerate(results):
         cells = []
         for col in columns:
-            editable = "" if col == "file" else ' contenteditable="plaintext-only"'
-            cls = ' class="file"' if col == "file" else ""
-            cells.append(f"<td{cls}{editable}>{_esc(row.get(col, ''))}</td>")
-        cells.append(f'<td class="noexport"><button class="view" data-i="{i}">'
+            editable = "" if col in derived else ' contenteditable="plaintext-only"'
+            if col == "file":
+                # Show the name; keep the path. A directory of documents has
+                # one long path prefix repeated on every row, which pushes the
+                # values a reviewer is here to read off the side of the table.
+                # The full path stays in the title and in the export, because
+                # it is what identifies the document.
+                full = str(row.get(col, ""))
+                shown = full.rsplit("/", 1)[-1].rsplit("\\", 1)[-1] or full
+                cells.append(f'<td class="file" title="{_esc(full)}" '
+                             f'data-full="{_esc(full)}">{_esc(shown)}</td>')
+                continue
+            cells.append(f"<td{editable}>{_esc(row.get(col, ''))}</td>")
+        # A row where no field matched is not the same as a row of empty
+        # values, and a reviewer cannot tell them apart from blank cells.
+        found = any(str(row.get(c, "")).strip() for c in value_columns)
+        note = "" if found or not value_columns else (
+            '<span class="nofields" title="This document was read, but none of '
+            'the discovered labels appear in it -- often a different vendor\'s '
+            'layout. Its full text is in the source view.">no fields matched'
+            "</span> ")
+        cells.append(f'<td class="noexport">{note}<button class="view" data-i="{i}">'
                      f"view source</button></td>")
         body.append("<tr>" + "".join(cells) + "</tr>")
 
@@ -314,6 +347,21 @@ def write_datasheet(rows, path, columns=None, title="File state datasheet"):
     rows = list(rows)
     columns = columns or (list(rows[0].keys()) if rows else ["name"])
 
+    # Drop columns that are empty for every file in this set. The record has
+    # 29 fields because a file can have 29 interesting properties, not because
+    # any one file has; a corpus with no archives carries four permanently
+    # blank columns, and on a narrow screen those are four columns of
+    # horizontal scrolling between the reader and the data. Nothing is
+    # invented and nothing is summarised -- the CSV form still carries every
+    # field, and the page says which ones it left out.
+    def _blank(value):
+        return value is None or str(value).strip() == ""
+
+    dropped = [c for c in columns
+               if rows and all(_blank(r.get(c)) for r in rows)]
+    if dropped:
+        columns = [c for c in columns if c not in dropped]
+
     head = "".join(
         f'<th data-col="{_esc(c)}">{_esc(c.replace("_", " "))}</th>' for c in columns)
 
@@ -340,6 +388,14 @@ def write_datasheet(rows, path, columns=None, title="File state datasheet"):
     unreliable = sum(1 for r in on_disk if r.get("ownership_reliable") is False)
     no_created = sum(1 for r in on_disk if not r.get("created"))
     notes = []
+    if dropped:
+        shown = ", ".join(c.replace("_", " ") for c in dropped)
+        notes.append(
+            f"<strong>{len(dropped)} column"
+            f"{'s are' if len(dropped) != 1 else ' is'} not shown</strong> "
+            f"because no file in this set has a value for "
+            f"{'them' if len(dropped) != 1 else 'it'}: {_esc(shown)}. "
+            f"The CSV form of this datasheet still carries every field.")
     if members:
         notes.append(
             f"<strong>{len(members)} of {len(rows)} entries</strong> were found "

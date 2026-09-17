@@ -365,8 +365,8 @@ Every option the command accepts. `--help` prints the same list.
 Two layers, both runnable:
 
 ```bash
-python3 -m unittest discover -s tests -v     # 107 unit tests
-python3 verify_e2e.py                        # 177 end-to-end claim checks
+python3 -m unittest discover -s tests -v     # 109 unit tests
+python3 verify_e2e.py                        # 178 end-to-end claim checks
 ```
 
 `verify_e2e.py` exists because unit tests check units, not promises. It generates a fresh corpus
@@ -385,7 +385,7 @@ figures here are whatever it last measured, not what would read best.
 python3 -m unittest discover -s tests -v
 ```
 
-107 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
+109 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
 there is nothing opaque in the repo. The suite covers the cases that actually break extractors:
 balanced parens inside PDF strings, escaped close-parens, octal escapes, odd hex nibbles,
 RTF `\fonttbl` contents leaking into output, cp1252 fallback, and misnamed files -- plus the

@@ -1195,6 +1195,43 @@ class TestDatasheet(unittest.TestCase):
         self.assertTrue(page.has("input", id="q"))
         self.assertIn("parseFloat", page.script_text)
 
+    def test_a_column_empty_for_every_file_is_not_shown(self):
+        """29 fields exist because a FILE can have 29 properties, not this set.
+
+        A corpus with no archives and no symlinks carries four permanently
+        blank columns, which on a narrow screen is four columns of horizontal
+        scrolling between the reader and the data.
+        """
+        import tempfile
+        from vanilla_extract.report import write_datasheet
+        rows = [{"name": "a.txt", "size": "1 B", "symlink_target": "",
+                 "compressed_bytes": None},
+                {"name": "b.txt", "size": "2 B", "symlink_target": "",
+                 "compressed_bytes": None}]
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "s.html")
+            write_datasheet(rows, out,
+                            columns=["name", "size", "symlink_target",
+                                     "compressed_bytes"])
+            page = page_of(out)
+        shown = page.attr_values("data-col")
+        self.assertEqual(shown, {"name", "size"})
+        # and the page says what it left out, rather than quietly dropping it
+        self.assertIn("symlink target", page.text)
+        self.assertIn("compressed bytes", page.text)
+
+    def test_a_column_with_any_value_is_kept(self):
+        """One file having a value is enough; the column is about the set."""
+        import tempfile
+        from vanilla_extract.report import write_datasheet
+        rows = [{"name": "a.txt", "compressed_bytes": ""},
+                {"name": "b.txt", "compressed_bytes": "120"}]
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "s.html")
+            write_datasheet(rows, out, columns=["name", "compressed_bytes"])
+            page = page_of(out)
+        self.assertIn("compressed_bytes", page.attr_values("data-col"))
+
     def test_datasheet_values_are_escaped(self):
         import tempfile
         from vanilla_extract.report import write_datasheet

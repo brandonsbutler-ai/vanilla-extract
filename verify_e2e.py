@@ -133,6 +133,44 @@ class _Doc(HTMLParser):
         return self.text_of.get("script", "")
 
 
+class _Rows(HTMLParser):
+    """Table rows as [(text, attrs)], so a check can ask about one column."""
+
+    def __init__(self, markup):
+        super().__init__(convert_charrefs=True)
+        self.rows = []
+        self._row = None
+        self._cell = None
+        self._attrs = {}
+        self.feed(markup)
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "tr":
+            self._row = []
+        elif tag in ("td", "th"):
+            self._cell, self._attrs = [], dict(attrs)
+
+    def handle_endtag(self, tag):
+        if tag in ("td", "th") and self._cell is not None:
+            self._row.append(("".join(self._cell).strip(), self._attrs))
+            self._cell = None
+        elif tag == "tr" and self._row is not None:
+            self.rows.append(self._row)
+            self._row = None
+
+    def handle_data(self, data):
+        if self._cell is not None:
+            self._cell.append(data)
+
+
+def _table_rows(path):
+    """Data rows (header dropped) of the first table in a generated page."""
+    with open(path, encoding="utf-8") as fh:
+        rows = _Rows(fh.read()).rows
+    return [r for r in rows[1:] if r and "class" in r[0][1]
+            and r[0][1].get("class") == "file"]
+
+
 def parse_page(path):
     """Read a generated page and hand back its parsed form."""
     with open(path, encoding="utf-8") as fh:
@@ -756,9 +794,22 @@ def verify_error_paths(workdir):
 
 def verify_report(corpus, workdir):
     section("CLAIM: the HTML report is self-contained, previewable, editable, exportable")
-    src = os.path.dirname(corpus["txt"][0])
+    # A purpose-built set rather than the general corpus. The general corpus is
+    # deliberately heterogeneous, so recognition finds no label shared widely
+    # enough to become a column -- which made this whole section run against a
+    # report with no value columns in it, and the editability check passed only
+    # because it was counting the derived `characters` cell.
+    src = os.path.join(workdir, "review_src")
+    os.makedirs(src, exist_ok=True)
+    for n in range(6):
+        with open(os.path.join(src, f"inv-{n}.txt"), "w", encoding="utf-8") as fh:
+            fh.write(f"ACME SUPPLY\n\nInvoice Number: INV-90{n}\n"
+                     f"Invoice Date: 2026-08-0{n + 1}\n"
+                     f"Customer: Northwind Trading Co\n"
+                     f"Terms: Net 30\nTotal: ${n + 1},010.00\n"
+                     f"Contact: ap@acme.example\n")
     path = os.path.join(workdir, "review.html")
-    r = cli("--batch", src, "--recognize", "--min-support", "0.2",
+    r = cli("--batch", src, "--recognize",
             "--report", path, "--csv", os.path.join(workdir, "r.csv"))
     check("report run exits 0", r.returncode == 0, r.stderr[-200:])
     doc = open(path, encoding="utf-8").read()
@@ -767,10 +818,24 @@ def verify_report(corpus, workdir):
               if str(a.get("src", "")).startswith("http")
               or str(a.get("href", "")).startswith("http")]
     check("no external assets (works offline from file://)", not remote, remote)
-    editable = [a for _t, a in page.elements
-                if a.get("contenteditable") == "plaintext-only"]
-    check(f"cells are editable in place ({len(editable)} editable cells)",
-          len(editable) >= 2)
+    # Editability is a property OF A COLUMN, not a count of cells. Counting
+    # cells passed while the `characters` column -- a number the tool derived,
+    # not a value read from the document -- was the editable one.
+    cols = [a.get("data-col") for t, a in page.elements
+            if t == "th" and a.get("data-col")]
+    value_cols = [c for c in cols if c not in ("file", "characters")]
+    rows = [r for r in _table_rows(path) if r]
+    editable_by_col = {c: 0 for c in cols}
+    for row in rows:
+        for c, cell in zip(cols, row):
+            if "contenteditable" in cell[1]:
+                editable_by_col[c] += 1
+    check(f"every value column is editable ({len(value_cols)} of {len(cols)})",
+          value_cols and all(editable_by_col[c] == len(rows) for c in value_cols),
+          {c: editable_by_col[c] for c in value_cols})
+    check("derived columns are NOT editable (file, characters)",
+          all(editable_by_col.get(c, 0) == 0 for c in ("file", "characters")),
+          {c: editable_by_col.get(c) for c in ("file", "characters")})
     check("per-document source preview is a real dialog element",
           page.has("dialog") and any(a.get("class") == "view"
                                      for _t, a in page.elements))
