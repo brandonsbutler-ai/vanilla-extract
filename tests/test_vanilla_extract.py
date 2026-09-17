@@ -10,6 +10,7 @@ hand is also the clearest possible statement of what the extractor expects.
 import io
 import os
 import sys
+from html.parser import HTMLParser
 import unittest
 import zipfile
 import zlib
@@ -49,6 +50,79 @@ def make_pdf(text_ops, compress=True):
     return (b"%PDF-1.4\n1 0 obj\n<< " + filt +
             b"/Length " + str(len(stream)).encode() + b" >>\nstream\n" +
             stream + b"\nendstream\nendobj\n%%EOF\n")
+
+
+class Page(HTMLParser):
+    """A generated page as an element tree, so tests can ask what it IS.
+
+    Every assertion here used to be a substring search over the file, which
+    tests how the generator spells its output rather than what a browser would
+    do with it. Three concrete ways that goes wrong, all of them live in this
+    file's history:
+
+      * `'<td class="file">a.pdf</td>' in doc` fails the moment an attribute is
+        added or reordered, though nothing about the page has changed.
+      * `'<script>alert(1)</script>' not in doc` passes on a page that builds
+        the same element as `<SCRIPT >alert(1)</SCRIPT >`.
+      * the report embeds the documents' own text, so a search over the whole
+        file cannot tell markup from content -- a document CONTAINING the
+        string `id="q"` would satisfy a check about the filter box.
+    """
+
+    def __init__(self, markup):
+        super().__init__(convert_charrefs=True)
+        self.elements = []                 # (tag, {attr: value})
+        self.text_parts = []               # text outside <script>/<style>
+        self.script = []
+        self._stack = []
+        self.feed(markup)
+
+    def handle_starttag(self, tag, attrs):
+        self.elements.append((tag, dict(attrs)))
+        self._stack.append(tag)
+
+    def handle_startendtag(self, tag, attrs):
+        self.elements.append((tag, dict(attrs)))
+
+    def handle_endtag(self, tag):
+        if tag in self._stack:
+            while self._stack and self._stack.pop() != tag:
+                pass
+
+    def handle_data(self, data):
+        top = self._stack[-1] if self._stack else ""
+        if top == "script":
+            self.script.append(data)
+        elif top != "style":
+            self.text_parts.append(data)
+
+    # -- queries
+    def find(self, tag, **attrs):
+        return [a for t, a in self.elements
+                if t == tag and all(a.get(k) == v for k, v in attrs.items())]
+
+    def has(self, tag, **attrs):
+        return bool(self.find(tag, **attrs))
+
+    def tags(self):
+        return [t for t, _a in self.elements]
+
+    def attr_values(self, name):
+        return {a[name] for _t, a in self.elements if name in a}
+
+    @property
+    def text(self):
+        """Visible text only -- not markup, not script, not CSS."""
+        return " ".join(self.text_parts)
+
+    @property
+    def script_text(self):
+        return "".join(self.script)
+
+
+def page_of(path):
+    with open(path, encoding="utf-8") as fh:
+        return Page(fh.read())
 
 
 class TestPDF(unittest.TestCase):
@@ -388,9 +462,15 @@ class TestReport(unittest.TestCase):
             self.assertNotIn(needle, doc)
 
     def test_exceptions_are_shown_not_hidden(self):
-        doc = self._render()
-        self.assertIn("encrypted", doc)
-        self.assertIn("needs a password", doc)
+        """Read from the page's TEXT, not its source.
+
+        The report embeds every document's extracted text, so a search over
+        the file cannot tell a heading from a document that happens to contain
+        the word.
+        """
+        page = Page(self._render())
+        self.assertIn("encrypted", page.text)
+        self.assertIn("needs a password", page.text)
 
     def test_values_are_escaped(self):
         """A document containing markup must not be able to inject it."""
@@ -402,13 +482,23 @@ class TestReport(unittest.TestCase):
             path = os.path.join(d, "r.html")
             write_report(rows, [], path)
             doc = open(path, encoding="utf-8").read()
-        self.assertNotIn("<script>alert(1)</script>", doc)
-        self.assertIn("&lt;script&gt;", doc)
+        page = Page(doc)
+        # The report writes exactly one script of its own. A value that became
+        # markup would add another, or land inside that one.
+        self.assertEqual(page.tags().count("script"), 1,
+                         "the value became a script element")
+        self.assertNotIn("alert(1)", page.script_text,
+                         "the value reached the page's own script")
+        self.assertIn("alert(1)", page.text,
+                      "the value was dropped rather than escaped")
 
     def test_file_column_is_not_editable(self):
         """The filename identifies the row; editing it would break provenance."""
-        doc = self._render()
-        self.assertIn('<td class="file">a.pdf</td>', doc)
+        page = Page(self._render())
+        cells = page.find("td", **{"class": "file"})
+        self.assertTrue(cells, "no filename cells rendered")
+        for cell in cells:
+            self.assertNotIn("contenteditable", cell)
 
 
 class TestProvenance(unittest.TestCase):
@@ -843,8 +933,11 @@ class TestReviewRegressions(unittest.TestCase):
             path = os.path.join(d, "r.html")
             write_report(rows, [], path)
             doc = open(path, encoding="utf-8").read()
-        self.assertNotIn("</script><img", doc)
-        self.assertNotIn("<img src=x", doc)
+        page = Page(doc)
+        self.assertEqual(page.find("img"), [],
+                         "the document supplied an element that survived parsing")
+        self.assertLessEqual(page.tags().count("script"), 2,
+                             "the document opened a script block")
 
     def test_pdf_object_index_is_not_quadratic(self):
         """#4 -- objects with no `endobj` sliced to end-of-file, n^2 in time and memory."""
@@ -1093,10 +1186,14 @@ class TestDatasheet(unittest.TestCase):
             out = os.path.join(d, "sheet.html")
             write_datasheet(rows, out, columns=["name", "size", "permissions"])
             doc = open(out, encoding="utf-8").read()
-        self.assertNotIn('src="http', doc)
-        self.assertIn("data-col=", doc)
-        self.assertIn('id="q"', doc)
-        self.assertIn("parseFloat", doc)
+        page = Page(doc)
+        remote = [a for _t, a in page.elements
+                  if str(a.get("src", "")).startswith("http")
+                  or str(a.get("href", "")).startswith("http")]
+        self.assertEqual(remote, [], "an element loads a remote URL")
+        self.assertGreaterEqual(len(page.attr_values("data-col")), 3)
+        self.assertTrue(page.has("input", id="q"))
+        self.assertIn("parseFloat", page.script_text)
 
     def test_datasheet_values_are_escaped(self):
         import tempfile
@@ -1106,8 +1203,11 @@ class TestDatasheet(unittest.TestCase):
             out = os.path.join(d, "s.html")
             write_datasheet(rows, out, columns=["name", "size"])
             doc = open(out, encoding="utf-8").read()
-        self.assertNotIn("<script>alert(1)</script>", doc)
-        self.assertIn("&lt;script&gt;", doc)
+        page = Page(doc)
+        self.assertNotIn("alert(1)", page.script_text,
+                         "the value reached the page's own script")
+        self.assertIn("alert(1)", page.text,
+                      "the value was dropped rather than escaped")
 
     def test_workspace_records_state_when_found(self):
         import tempfile
