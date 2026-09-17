@@ -1329,13 +1329,40 @@ class TestFileInfo(unittest.TestCase):
             fileinfo._FS_CACHE.clear()
 
     def test_autofs_never_shadows_the_real_filesystem(self):
-        """Two mounts can claim one path; the later real one is the answer."""
+        """Two mounts can claim one path; the later real one is the answer.
+
+        The shadowed mount point is DISCOVERED from /proc/mounts, not named.
+        It used to be a literal path on one developer's machine, which made the
+        assertion vacuous everywhere else: the comprehension came back empty and
+        assertNotIn passed without testing anything. Most Linux boxes have at
+        least one such point (/proc/sys/fs/binfmt_misc is autofs-triggered), and
+        where none exists the test skips out loud rather than passing quietly.
+        """
         from vanilla_extract import fileinfo
         table = fileinfo._mount_table()
         points = [m for m, _ in table]
         self.assertEqual(len(points), len(set(points)), "duplicate mount points")
-        self.assertNotIn("autofs", [f for m, f in table
-                                    if m == "/mnt/volume"])
+
+        raw = {}
+        try:
+            with open("/proc/mounts", encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    parts = line.split()
+                    if len(parts) >= 3:
+                        raw.setdefault(parts[1].replace("\\040", " "),
+                                       []).append(parts[2])
+        except OSError:
+            self.skipTest("/proc/mounts unavailable")
+        shadowed = [pt for pt, kinds in raw.items()
+                    if any(k in fileinfo._PASSTHROUGH_FS for k in kinds)
+                    and any(k not in fileinfo._PASSTHROUGH_FS for k in kinds)]
+        if not shadowed:
+            self.skipTest("no mount point on this machine is claimed by both a "
+                          "passthrough trigger and a real filesystem")
+        resolved = dict(table)
+        for point in shadowed:
+            self.assertNotIn(resolved.get(point), fileinfo._PASSTHROUGH_FS,
+                             f"{point} resolved to a trigger, not the real fs")
 
     def test_symlink_is_reported_with_its_target(self):
         import tempfile
