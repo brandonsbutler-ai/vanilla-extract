@@ -75,9 +75,17 @@ document never aborts the batch, and it never silently becomes an empty row eith
 | **Text** | TXT, MD, LOG, with encoding detection |
 | **Archives** | ZIP containing any of the above |
 
-Routing is by **content first, extension second**. In any real corpus a meaningful fraction of
-files are misnamed — a `.doc` that is really RTF, a `.txt` that is really a PDF — and trusting
-the extension is the usual reason a batch job silently produces nothing for part of its input.
+Routing is by **signature first, extension second, and the extension is not allowed to
+contradict a missing signature.** In any real corpus a meaningful fraction of files are misnamed
+— a `.doc` that is really RTF, a `.txt` that is really a PDF — and trusting the extension is the
+usual reason a batch job silently produces nothing for part of its input.
+
+Precisely, in this order: magic bytes; then the extension, unless it names a format that always
+begins with a signature (PDF, RTF, the OOXML family) and that signature is absent; then, as a
+last resort, plain text if the bytes contain no NUL. That third clause matters. A text export
+saved as `report.pdf` used to reach the PDF reader and come back `no_text_found` — a reason this
+README describes as almost always a scan with no text layer, so it sent the reader looking for
+OCR for a file whose text was sitting in plain bytes.
 
 ## Measured results
 
@@ -349,7 +357,7 @@ Every option the command accepts. `--help` prints the same list.
 Two layers, both runnable:
 
 ```bash
-python3 -m unittest discover -s tests -v     # 102 unit tests
+python3 -m unittest discover -s tests -v     # 104 unit tests
 python3 verify_e2e.py                        # 176 end-to-end claim checks
 ```
 
@@ -369,7 +377,7 @@ figures here are whatever it last measured, not what would read best.
 python3 -m unittest discover -s tests -v
 ```
 
-102 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
+104 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
 there is nothing opaque in the repo. The suite covers the cases that actually break extractors:
 balanced parens inside PDF strings, escaped close-parens, octal escapes, odd hex nibbles,
 RTF `\fonttbl` contents leaking into output, cp1252 fallback, and misnamed files -- plus the

@@ -136,7 +136,7 @@ Three layers, because they catch different things.
 
 | Layer | What it is | What it catches |
 |---|---|---|
-| **Unit tests** (102) | `python3 -m unittest discover -s tests` | Logic errors in one function, and every past bug as a regression test |
+| **Unit tests** (104) | `python3 -m unittest discover -s tests` | Logic errors in one function, and every past bug as a regression test |
 | **Benchmark** | `python3 benchmark.py <dir>` | Extraction *quality*, scored against an independent implementation |
 | **End-to-end verification** (176 checks) | `python3 verify_e2e.py` | Whether the product does what its documentation says |
 
@@ -341,7 +341,7 @@ Every one of those is now a named regression test.
 git clone https://github.com/brandonsbutler-ai/vanilla-extract
 cd vanilla_extract
 
-python3 -m unittest discover -s tests -v    # 102 unit tests
+python3 -m unittest discover -s tests -v    # 104 unit tests
 python3 verify_e2e.py                       # 176 end-to-end claim checks
 python3 benchmark.py /path/to/your/pdfs     # quality against pdftotext
 ```

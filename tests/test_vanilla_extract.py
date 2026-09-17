@@ -610,6 +610,36 @@ class TestHostileInput(unittest.TestCase):
                     f"{name} grows {ratio:.1f}x per doubling on {label!r} "
                     f"({slowest * 1000:.0f} ms at 32k) -- linear is ~2x")
 
+    def test_a_name_cannot_override_a_missing_signature(self):
+        """A text export saved as report.pdf came back `no_text_found`.
+
+        That reason is documented as almost always meaning a scan with no text
+        layer, so the reader was sent looking for OCR for a file whose text was
+        sitting in plain bytes. PDF, RTF and OOXML all begin with a fixed
+        signature; if it is absent the file is not that format, whatever it is
+        called, and the extension must not route to that reader.
+        """
+        from vanilla_extract.dispatch import sniff, extract
+        from vanilla_extract.formats import plain, pdf, rtf as rtf_mod, ooxml
+        for data, name in ((b"Invoice: T1\nTotal: $8.00\n", "report.pdf"),
+                           (b"a,b\n1,2\n", "sheet.pdf"),
+                           (b"plain words", "note.rtf"),
+                           (b"not a zip at all", "deck.docx")):
+            self.assertIs(sniff(data, name), plain.extract_text,
+                          f"{name} with no signature routed to the wrong reader")
+        self.assertEqual(extract(b"Invoice: T1\n", "report.pdf").strip(),
+                         "Invoice: T1")
+
+    def test_a_real_signature_still_wins_over_the_name(self):
+        """The fix must not stop a correctly named file from being read."""
+        from vanilla_extract.dispatch import sniff
+        from vanilla_extract.formats import pdf, rtf as rtf_mod, plain, markup
+        self.assertIs(sniff(b"%PDF-1.4\n%x\n", "x.pdf"), pdf.extract_pdf)
+        self.assertIs(sniff(rb"{\rtf1 hi}", "x.rtf"), rtf_mod.extract_rtf)
+        self.assertIs(sniff(b"a,b\n1,2\n", "x.csv"), plain.extract_csv)
+        self.assertIs(sniff(b'{"a": 1}', "x.json"), plain.extract_json)
+        self.assertIs(sniff(b"<html><p>h</p></html>", "x.txt"), markup.extract_html)
+
     def test_rtf_whitespace_cleanup_is_linear(self):
         """`[ \\t]+\\n` restarted at every blank: 1.9 s on 64 KB of spaces.
 

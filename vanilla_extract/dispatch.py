@@ -38,6 +38,14 @@ _BY_EXT = {
     ".log": plain.extract_text,
 }
 
+# Handlers whose format always starts with a fixed signature. If the signature
+# checks above did not fire, the file is not one of these no matter what it is
+# named, so the extension must not route to them.
+_NEEDS_SIGNATURE = frozenset((
+    pdf.extract_pdf, rtf.extract_rtf,
+    ooxml.extract_docx, ooxml.extract_pptx, ooxml.extract_xlsx, ooxml.extract_odt,
+))
+
 # Members of an OOXML zip that identify which OOXML flavour it is.
 _ZIP_MARKERS = (
     ("word/document.xml", ooxml.extract_docx),
@@ -93,10 +101,21 @@ def sniff(data, filename=""):
     if _looks_like_email(head):
         return mail.extract_eml
 
-    # Content was inconclusive; fall back to the extension.
+    # Content was inconclusive; fall back to the extension -- except where the
+    # extension names a format that CANNOT be inconclusive.
+    #
+    # PDF, RTF and the OOXML family all begin with a fixed signature. Reaching
+    # this point means that signature is absent, so the file is not that format
+    # whatever it is called, and handing it to that reader produces a wrong
+    # diagnosis rather than an error: a text export saved as report.pdf came
+    # back "no_text_found", which the documentation describes as almost always
+    # a scan with no text layer. It sent the reader looking for OCR for a file
+    # whose text was sitting there in plain bytes.
     lower = filename.lower()
     for ext, handler in _BY_EXT.items():
         if lower.endswith(ext):
+            if handler in _NEEDS_SIGNATURE:
+                break          # the name is wrong about the format; keep going
             return handler
 
     # Last resort: if it decodes as text without NUL bytes, treat it as text.
