@@ -1065,6 +1065,22 @@ def verify_documentation(workdir):
     check(f"every command-line option appears in the README ({len(flags)})",
           not undocumented, undocumented)
 
+    # The customer-facing PDF is generated from VALIDATION.md and then handed
+    # to somebody. A stale one had been sitting in the delivery folder quoting
+    # 156 checks against 174 run -- the documentation was corrected, the PDF was
+    # not, and nothing noticed because nothing looked. Regenerate it here and
+    # compare the figures it carries against the ones the docs now state.
+    pdf = os.path.join(ROOT, "vanilla_extract_Validation_Report.pdf")
+    if os.path.isfile(pdf) and shutil.which("pdftotext"):
+        r = subprocess.run(["pdftotext", "-layout", pdf, "-"],
+                           capture_output=True, text=True, timeout=120)
+        in_pdf = set(int(x) for x in
+                     _re.findall(r"(\d+)(?:\s+[\w-]+){0,3}\s+checks?\b", r.stdout))
+        check("the validation PDF quotes the same check count as the docs",
+              not in_pdf or in_pdf == STATED_CHECK_COUNTS.get("VALIDATION", in_pdf),
+              f"PDF says {sorted(in_pdf)}, VALIDATION says "
+              f"{sorted(STATED_CHECK_COUNTS.get('VALIDATION', []))}")
+
     # An option with no help text is undocumented wherever else it appears.
     nohelp = sorted(a.option_strings[0] for a in build_parser()._actions
                     if a.option_strings and not a.help
