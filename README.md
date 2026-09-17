@@ -337,7 +337,28 @@ checked, what the checks measured, the defects they found, and a section on what
 **not** prove. `python3 generate_validation_pdf.py` renders it to a PDF for anyone who would
 rather have one.
 
-## The desktop window
+## The desktop application
+
+**Self-contained: one file, nothing to install.** No Python, no pip, no Qt on
+the machine it runs on. Download it, double-click it, drop a folder on the
+window.
+
+```bash
+# to BUILD it (on the platform you are shipping to)
+python3 -m pip install pyinstaller "PySide6-Essentials"
+python3 packaging/build_standalone.py
+
+#   dist/Vanilla Extract            the application  (~57 MB, one file)
+#   dist/vanilla                    the command line (~8 MB, one file)
+#   dist/vanilla-extract.desktop    Linux menu entry
+```
+
+On Linux, copy the `.desktop` file into `~/.local/share/applications/` and it
+appears in the launcher and accepts a folder dropped onto its icon. Without it
+the build is a large file in a folder that a file manager offers to open in a
+text editor.
+
+If you would rather run it from a Python you already have:
 
 ```bash
 pip install vanilla-extract[gui]

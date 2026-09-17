@@ -16,37 +16,48 @@ import webbrowser
 
 from .session import DropError, Session, folders_from_drop
 
-# Three surfaces, not one. Everything used to sit on a single flat ground, so
-# the drop target, the summary, the options and the result read as one sheet
-# with text scattered on it and no way to tell where one field ended and the
-# next began.
+# GOLD ON BLACK, with the particulars in a brighter accent.
 #
-#   BG      the page             recessed, coolest
-#   CARD    a panel on the page  raised, white
-#   SUNK    a row inside a panel a half-step back from the panel
-# The page is TINTED, not grey. On a grey ground a white card is a slightly
-# brighter grey and the eye has to work to find its edges; against a cool
-# slate the white reads as paper laid on a desk, which is what it is. The tint
-# is pulled from the accent so the window has one colour family rather than a
-# blue button sitting on neutral nothing.
-INK     = "#15171c"
-MUTED   = "#56606f"
-FAINT   = "#8794a5"
-BG      = "#dfe6ef"      # the page
-BG2     = "#d3dce8"      # a slightly deeper band, for the step rail
-CARD    = "#ffffff"      # paper
-SUNK    = "#f4f7fb"      # a row inside paper
-LINE    = "#c3cfdd"
-LINE2   = "#e3eaf3"
-ACCENT  = "#1f4d8f"
-ACCENT2 = "#2a5fa8"
-WARN    = "#8a5a00"
-WARNBG  = "#fdf6e9"
-OKC     = "#2d6a4f"
+# Three surfaces, not one, because everything sat on a single flat ground and
+# there was no telling where one field ended and the next began:
+#
+#   BG      the page              deepest, warm black rather than neutral
+#   CARD    a panel on the page    a step up, still dark
+#   SUNK    a row inside a panel   a half-step back from the panel
+#
+# Gold carries the STRUCTURE -- headings, rules, borders, the primary action.
+# Orange carries the PARTICULARS -- the values the tool extracted, the counts,
+# the discovered field names. The split is functional, not decorative: on a
+# gold-on-black screen a reader is looking for the numbers, and giving them
+# their own hue means they are found without reading anything around them.
+#
+# Magenta is the exception colour. On this palette the usual amber warning is
+# a shade of gold and disappears into the chrome, so anything that could not
+# be read is magenta -- the one hue on screen that means only that.
+INK     = "#f2ece0"      # warm off-white; pure white glares on black
+MUTED   = "#a89d86"
+FAINT   = "#7a7160"
+BG      = "#0d0c0a"      # the page
+CARD    = "#17150f"      # a panel
+SUNK    = "#1f1c14"      # a row inside a panel
+LINE    = "#3a3425"
+LINE2   = "#2a2519"
+# The piping is VANILLA, not gold. Gold reads as a finance product; the colour
+# this is named after is the cream of the ice cream, and it is warmer and much
+# less saturated. It carries the structure -- headings, rules, borders, the
+# primary action -- and never the values.
+GOLD    = "#e3d2a8"      # vanilla cream: the piping
+GOLD_DK = "#8d8059"      # the same hue with the light taken out, for rules
+ACCENT  = GOLD
+ACCENT2 = "#f0e3c4"
+PARTIC  = "#ff9e3d"      # particulars: values, counts, field names
+MAGENTA = "#ff4fa3"      # could not be read
+MAGBG   = "#2a1220"
+OKC     = "#7bd88f"
 
 _TICK_SVG = (
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">'
-    '<path d="M3.5 8.4 L6.4 11.3 L12.5 4.8" stroke="white" stroke-width="2.2"'
+    '<path d="M3.5 8.4 L6.4 11.3 L12.5 4.8" stroke="#1a170f" stroke-width="2.4"'
     ' fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>')
 
 
@@ -57,12 +68,13 @@ def _tick_path():
     rejects the commas and angle brackets an inline SVG is made of -- and it
     rejects the WHOLE SHEET from that rule onward, so the symptom was ticked
     boxes drawing empty rather than an error anybody would notice.
+
+    The stroke is near-black because the box it sits in is gold.
     """
     import tempfile
     path = os.path.join(tempfile.gettempdir(), "vanilla_gui_tick.svg")
-    if not os.path.exists(path):
-        with open(path, "w", encoding="utf-8") as fh:
-            fh.write(_TICK_SVG)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(_TICK_SVG)
     return path.replace("\\", "/")
 
 
@@ -87,28 +99,29 @@ STYLE = f"""
     color: {INK};
 }}
 QWidget#root      {{ background: {BG}; }}
-QLabel#title      {{ font-size: 26px; font-weight: 600; letter-spacing: -0.4px; }}
+QLabel#title      {{ font-size: 26px; font-weight: 600; letter-spacing: -0.4px;
+                     color: {GOLD}; }}
 QLabel#blurb      {{ font-size: 13px; color: {MUTED}; }}
-QLabel#sectionCap {{ font-size: 11px; color: {FAINT}; font-weight: 600;
+QLabel#sectionCap {{ font-size: 11px; color: {GOLD_DK}; font-weight: 600;
                      letter-spacing: 0.9px; text-transform: uppercase; }}
 QLabel#folderPath {{ font-size: 12px; color: {MUTED}; font-family: {MONO}; }}
 QLabel#indexLine  {{ font-size: 16px; font-weight: 600; font-family: {MONO};
-                     letter-spacing: -0.2px; }}
+                     letter-spacing: -0.2px; color: {PARTIC}; }}
 
 /* Step numbering. The state of each one is carried by the chip, so the eye
    finds "where am I" before it reads a single word. */
 QLabel#stepDone {{
-    background: {OKC}; color: #ffffff; border-radius: 11px;
+    background: {OKC}; color: #10210f; border-radius: 11px;
     min-width: 22px; max-width: 22px; min-height: 22px; max-height: 22px;
     font-size: 12px; font-weight: 700;
 }}
 QLabel#stepNow {{
-    background: {ACCENT}; color: #ffffff; border-radius: 11px;
+    background: {GOLD}; color: #1a170f; border-radius: 11px;
     min-width: 22px; max-width: 22px; min-height: 22px; max-height: 22px;
     font-size: 12px; font-weight: 700;
 }}
 QLabel#stepNext {{
-    background: #e2e2de; color: {FAINT}; border-radius: 11px;
+    background: {SUNK}; color: {FAINT}; border-radius: 11px;
     min-width: 22px; max-width: 22px; min-height: 22px; max-height: 22px;
     font-size: 12px; font-weight: 700;
 }}
@@ -117,10 +130,10 @@ QLabel#stepHeadNext {{ font-size: 14px; font-weight: 600; color: {FAINT}; }}
 QLabel#stepHeadDone {{ font-size: 14px; font-weight: 600; color: {MUTED}; }}
 QLabel#status     {{ font-size: 12px; color: {MUTED}; font-family: {MONO}; }}
 QLabel#headline   {{ font-size: 18px; font-weight: 600; font-family: {MONO};
-                     letter-spacing: -0.3px; }}
+                     letter-spacing: -0.3px; color: {PARTIC}; }}
 QLabel#optWhy     {{ font-size: 12px; color: {FAINT}; }}
 QLabel#fileLine   {{ font-size: 12.5px; color: {MUTED}; font-weight: 500; }}
-QLabel#valueLine  {{ font-size: 12px; color: {MUTED}; font-family: {MONO}; }}
+QLabel#valueLine  {{ font-size: 12px; color: {PARTIC}; font-family: {MONO}; }}
 
 QFrame#card {{
     background: {CARD};
@@ -130,7 +143,7 @@ QFrame#card {{
 QFrame#summary {{
     background: {CARD};
     border: 1px solid {LINE};
-    border-left: 3px solid {ACCENT};
+    border-left: 3px solid {PARTIC};
     border-radius: 10px;
 }}
 /* One option per row, each on its own recessed strip, so the label and the
@@ -140,7 +153,7 @@ QFrame#optRow {{
     border: 1px solid {LINE2};
     border-radius: 9px;
 }}
-QFrame#optRow:hover {{ border-color: #cfd8e6; background: #f4f7fc; }}
+QFrame#optRow:hover {{ border-color: {GOLD_DK}; background: #241f14; }}
 QFrame#writtenRow {{
     background: {SUNK};
     border: 1px solid {LINE2};
@@ -149,24 +162,28 @@ QFrame#writtenRow {{
 QFrame#rule {{ background: {LINE2}; max-height: 1px; border: none; }}
 QFrame#drop {{
     background: {CARD};
-    border: 2px dashed {LINE};
+    border: 2px dashed {GOLD_DK};
     border-radius: 14px;
 }}
 QFrame#dropActive {{
-    background: #f2f6fd;
-    border: 2px dashed {ACCENT};
+    background: #221d10;
+    border: 2px dashed {GOLD};
     border-radius: 14px;
 }}
 QLabel#dropTitle  {{ font-size: 19px; font-weight: 500; }}
 QLabel#dropOr     {{ font-size: 12px; color: {FAINT}; }}
 
+/* The exception box is MAGENTA, not amber. On gold-on-black an amber warning
+   is a shade of the chrome and vanishes into it; magenta is the one hue on
+   this screen that means only "this could not be read". */
 QFrame#warnBox {{
-    background: {WARNBG};
-    border: 1px solid #f0e2c4;
+    background: {MAGBG};
+    border: 1px solid #5c2a44;
+    border-left: 3px solid {MAGENTA};
     border-radius: 10px;
 }}
-QLabel#warnHead {{ font-size: 13px; font-weight: 600; color: {WARN}; }}
-QLabel#warnLine {{ font-size: 12px; color: {WARN}; font-family: {MONO}; }}
+QLabel#warnHead {{ font-size: 13px; font-weight: 600; color: {MAGENTA}; }}
+QLabel#warnLine {{ font-size: 12px; color: {MAGENTA}; font-family: {MONO}; }}
 QLabel#warnNote {{ font-size: 12px; color: {MUTED}; }}
 
 QPushButton {{
@@ -177,36 +194,36 @@ QPushButton {{
     font-size: 13px;
     font-weight: 500;
 }}
-QPushButton:hover    {{ background: #fbfbfa; border-color: #d2d2ce; }}
-QPushButton:disabled {{ color: {FAINT}; background: #fbfbfa; }}
+QPushButton:hover    {{ background: #221e15; border-color: {GOLD_DK}; }}
+QPushButton:disabled {{ color: {FAINT}; background: #14120d; }}
 QPushButton#primary {{
-    background: {ACCENT}; border: 1px solid {ACCENT};
-    color: #ffffff; padding: 11px 26px; font-weight: 600;
+    background: {GOLD}; border: 1px solid {GOLD};
+    color: #1a170f; padding: 11px 26px; font-weight: 700;
 }}
 QPushButton#primary:hover    {{ background: {ACCENT2}; border-color: {ACCENT2}; }}
-QPushButton#primary:disabled {{ background: #b9c8de; border-color: #b9c8de;
-                                color: #eef2f8; }}
+QPushButton#primary:disabled {{ background: #4a3f1d; border-color: #4a3f1d;
+                                color: #8a7c55; }}
 
 QCheckBox {{ font-size: 13px; font-weight: 500; spacing: 9px; }}
 QCheckBox::indicator {{
     width: 17px; height: 17px;
-    border: 1.5px solid #c8c8c3; border-radius: 5px; background: {CARD};
+    border: 1.5px solid {LINE}; border-radius: 5px; background: {SUNK};
 }}
 QCheckBox::indicator:checked {{
-    background: {ACCENT};
-    border-color: {ACCENT};
+    background: {GOLD};
+    border-color: {GOLD};
     image: url({TICK});
 }}
 QCheckBox::indicator:hover {{ border-color: {ACCENT}; }}
 QProgressBar {{
-    background: #ececea; border: none; border-radius: 3px;
+    background: {SUNK}; border: none; border-radius: 3px;
     height: 6px; text-align: center; color: transparent;
 }}
-QProgressBar::chunk {{ background: {ACCENT}; border-radius: 3px; }}
+QProgressBar::chunk {{ background: {PARTIC}; border-radius: 3px; }}
 QScrollArea, QScrollArea > QWidget > QWidget {{ background: transparent;
                                                 border: none; }}
 QScrollBar:vertical {{ background: transparent; width: 10px; margin: 0; }}
-QScrollBar::handle:vertical {{ background: #d5d5d1; border-radius: 5px;
+QScrollBar::handle:vertical {{ background: {LINE}; border-radius: 5px;
                                min-height: 30px; }}
 QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; }}
 """
@@ -305,7 +322,12 @@ def build(qt, session=None):
             self.steps = {}
             self.setObjectName("root")
             self.setWindowTitle("Vanilla Extract")
-            self.resize(880, 900)
+            # Geared for 1920x1080: wide enough to put the results beside the
+            # workflow rather than below it, and short enough to clear a
+            # taskbar and a title bar on a 1080-high screen. Type size does not
+            # change with the window -- a wider screen is for showing more at
+            # once, not for making the same content smaller.
+            self.resize(1560, 940)
             self.setMinimumSize(720, 640)
             self.setStyleSheet(STYLE)
             self._build()
@@ -363,9 +385,22 @@ def build(qt, session=None):
             page = QtWidgets.QWidget()
             page.setObjectName("root")
             scroll.setWidget(page)
-            col = QtWidgets.QVBoxLayout(page)
-            col.setContentsMargins(38, 34, 38, 34)
+
+            # Two columns on a wide screen, one on a narrow one. The workflow
+            # reads top to bottom on the left; the results appear on the right
+            # rather than pushing the controls off the bottom of the screen,
+            # which is what happened when everything was one column.
+            self.columns = QtWidgets.QHBoxLayout(page)
+            self.columns.setContentsMargins(38, 34, 38, 34)
+            self.columns.setSpacing(30)
+
+            left = QtWidgets.QWidget()
+            left.setObjectName("root")
+            left.setMaximumWidth(760)      # prose stops being readable past this
+            col = QtWidgets.QVBoxLayout(left)
+            col.setContentsMargins(0, 0, 0, 0)
             col.setSpacing(0)
+            self.columns.addWidget(left, 0)
 
             title = QtWidgets.QLabel("Vanilla Extract")
             title.setObjectName("title")
@@ -443,11 +478,19 @@ def build(qt, session=None):
             col.addSpacing(8)
             col.addWidget(self.status)
 
-            self.results = QtWidgets.QVBoxLayout()
-            self.results.setSpacing(0)
-            col.addSpacing(14)
-            col.addLayout(self.results)
             col.addStretch(1)
+
+            # The right-hand column: empty until there is something to put in
+            # it, so an unused half of the window is not sitting there looking
+            # like something failed to load.
+            self.right = QtWidgets.QWidget()
+            self.right.setObjectName("root")
+            self.results = QtWidgets.QVBoxLayout(self.right)
+            self.results.setContentsMargins(0, 0, 0, 0)
+            self.results.setSpacing(0)
+            self.results.addStretch(1)
+            self.right.hide()
+            self.columns.addWidget(self.right, 1)
 
         def _options_card(self):
             card = QtWidgets.QFrame()
@@ -512,7 +555,7 @@ def build(qt, session=None):
                 folders = folders_from_drop(raw)
                 index = self.session.load(folders, add=add)
             except DropError as exc:
-                self._say(str(exc), WARN)
+                self._say(str(exc), MAGENTA)
                 return
             if len(index.folders) == 1:
                 self.folder_path.setText(index.folders[0])
@@ -530,7 +573,7 @@ def build(qt, session=None):
             self._clear_results()
             self._progress_through("loaded")
             self._say("" if index.count
-                      else "nothing in that folder can be read", WARN)
+                      else "nothing in that folder can be read", MAGENTA)
 
         def _run(self):
             for key, box in self.boxes.items():
@@ -559,7 +602,7 @@ def build(qt, session=None):
             self.bar.hide()
             self.run_btn.setEnabled(True)
             self.run_btn.setText("Run")
-            self._say(message, WARN)
+            self._say(message, MAGENTA)
 
         def _finish(self, result):
             self.bar.hide()
@@ -578,6 +621,8 @@ def build(qt, session=None):
                 widget = item.widget()
                 if widget:
                     widget.deleteLater()
+            self.results.addStretch(1)
+            self.right.hide()
 
         def _show(self, result):
             card = QtWidgets.QFrame()
@@ -659,7 +704,8 @@ def build(qt, session=None):
                 rl.addWidget(where)
                 lay.addWidget(row)
                 lay.addSpacing(6)
-            self.results.addWidget(card)
+            self.results.insertWidget(0, card)
+            self.right.show()
 
         # -- opening
         def _open_report(self):
