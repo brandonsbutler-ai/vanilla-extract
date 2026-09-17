@@ -106,14 +106,22 @@ token recall : mean 1.000   median 1.000   min 1.000
 **Corpus B — 86 commercial PDFs** (Adobe PDF Library, Mac Quartz; illustrated, multi-column):
 
 ```
-files measured : 53
-token recall   : mean 0.873   median 0.912   min 0.007   max 0.961
->= 0.95        : 4/53  (7.5%)
->= 0.90        : 35/53 (66.0%)
->= 0.50        : 51/53 (96.2%)
+files measured : 52
+token recall   : mean 0.890   median 0.913   min 0.409   max 0.961
+>= 0.99        : 0/52  (0.0%)
+>= 0.95        : 4/52  (7.7%)
+>= 0.90        : 35/52 (67.3%)
+>= 0.50        : 51/52 (98.1%)
 
-encrypted, refused with a clear error: 33   (reported separately, not scored)
+encrypted, refused with a clear error          : 33   (not scored)
+unmapped CID fonts, refused with a clear error : 1    (not scored)
 ```
+
+Thirty-four of the 86 are not scored because the tool refuses them rather than guessing, and a
+refusal is not a recall figure. The single unmapped-font refusal used to be scored, at 0.007 --
+it came back as 2,549 characters of mojibake out of 401,034, with exit code 0. That is the blank
+row this tool exists to prevent, and it took an audit of the benchmark's own worst entry to find
+it. Excluding it is why the mean moved from 0.873 to 0.890; extraction did not improve.
 
 Read that honestly: **excellent on PDFs produced by tools, good-but-not-perfect on complex
 commercial ones, and never quite matching poppler on the hard ones.** If you need the last few
@@ -357,7 +365,7 @@ Every option the command accepts. `--help` prints the same list.
 Two layers, both runnable:
 
 ```bash
-python3 -m unittest discover -s tests -v     # 104 unit tests
+python3 -m unittest discover -s tests -v     # 107 unit tests
 python3 verify_e2e.py                        # 176 end-to-end claim checks
 ```
 
@@ -377,7 +385,7 @@ figures here are whatever it last measured, not what would read best.
 python3 -m unittest discover -s tests -v
 ```
 
-104 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
+107 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
 there is nothing opaque in the repo. The suite covers the cases that actually break extractors:
 balanced parens inside PDF strings, escaped close-parens, octal escapes, odd hex nibbles,
 RTF `\fonttbl` contents leaking into output, cp1252 fallback, and misnamed files -- plus the

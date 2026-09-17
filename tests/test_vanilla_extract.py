@@ -610,6 +610,138 @@ class TestHostileInput(unittest.TestCase):
                     f"{name} grows {ratio:.1f}x per doubling on {label!r} "
                     f"({slowest * 1000:.0f} ms at 32k) -- linear is ~2x")
 
+    def _pdf_with_unmapped_text(self, pages, decodable_runs, body="readable",
+                                glyph_runs=60):
+        """A PDF whose text is drawn in a font with no /ToUnicode map.
+
+        `decodable_runs` ordinary strings are added so the all-or-nothing guard
+        does NOT fire -- that is the whole point: a document can come back
+        overwhelmingly empty while a handful of runs decode.
+        """
+        import zlib
+        objs, offsets, parts = [], {}, [b"%PDF-1.5\n"]
+        kids = " ".join(f"{4 + i} 0 R" for i in range(pages))
+        def add(num, body):
+            offsets[num] = sum(len(x) for x in parts)
+            parts.append(f"{num} 0 obj\n{body}\nendobj\n".encode("latin-1"))
+        add(1, "<< /Type /Catalog /Pages 2 0 R >>")
+        add(2, f"<< /Type /Pages /Kids [{kids}] /Count {pages} >>")
+        add(3, "<< /Type /Font /Subtype /Type0 /BaseFont /AAAAAA+Sub "
+               "/Encoding /Identity-H >>")
+        num = 4
+        for page in range(pages):
+            # Glyph IDs: hex strings that decode to control characters.
+            # Kept inside the control range on purpose: past U+0020 the code
+            # points decode to printable characters, _is_garbage keeps them,
+            # and a fixture meant to be 95% dropped quietly becomes 83%.
+            glyphs = "".join(f"<{i % 31 + 1:04x}>" for i in range(1, glyph_runs))
+            content = f"BT /F1 12 Tf 72 720 Td [{glyphs}] TJ ET\n"
+            if page < decodable_runs:
+                content += f"BT /F1 12 Tf 72 700 Td ({body}) Tj ET\n"
+            z = zlib.compress(content.encode("latin-1"))
+            offsets[num] = sum(len(x) for x in parts)
+            parts.append(f"{num} 0 obj\n<< /Length {len(z)} /Filter /FlateDecode >>\n"
+                         "stream\n".encode("latin-1") + z + b"\nendstream\nendobj\n")
+            num += 1
+            offsets[num] = sum(len(x) for x in parts)
+            parts.append(f"{num} 0 obj\n<< /Type /Page /Parent 2 0 R "
+                         f"/MediaBox [0 0 612 792] /Resources << /Font "
+                         f"<< /F1 3 0 R >> >> /Contents {num - 1} 0 R >>\n"
+                         "endobj\n".encode("latin-1"))
+            num += 1
+        start = sum(len(x) for x in parts)
+        parts.append(f"xref\n0 {num}\n0000000000 65535 f \n".encode("latin-1"))
+        for n in range(1, num):
+            parts.append(b"%010d 00000 n \n" % offsets.get(n, 0))
+        parts.append(f"trailer\n<< /Size {num} /Root 1 0 R >>\n"
+                     f"startxref\n{start}\n%%EOF\n".encode("latin-1"))
+        return b"".join(parts)
+
+    def _coverage_signals(self, doc):
+        """(drop ratio, characters per page) actually produced by a fixture.
+
+        A fixture is a claim about the input. Measuring it here is what stops a
+        test asserting that one clause matters while a different clause is
+        doing the rejecting.
+        """
+        import collections
+        from vanilla_extract.formats import pdf as pdf_mod
+        counts = collections.Counter()
+        real = pdf_mod._is_garbage
+        def counting(text, *a, **kw):
+            bad = real(text, *a, **kw)
+            counts["dropped" if bad else "kept"] += len(text)
+            return bad
+        pdf_mod._is_garbage = counting
+        try:
+            try:
+                out = pdf_mod.extract_pdf(doc)
+            except pdf_mod.UndecodableText:
+                out = None
+        finally:
+            pdf_mod._is_garbage = real
+        total = counts["kept"] + counts["dropped"]
+        return counts["dropped"] / max(total, 1), counts, out
+
+    def test_a_mostly_undecodable_document_is_refused_not_returned(self):
+        """A 68-page book came back as 2,549 characters of mojibake, rc 0.
+
+        The guard only fired when EVERY run decoded to glyph IDs. A few runs
+        decoding was enough to silence it, so the document became an ordinary
+        results row -- the blank row nobody notices, which is the failure this
+        tool exists to prevent.
+        """
+        from vanilla_extract.formats.pdf import extract_pdf, UndecodableText
+        # Readable text on every page, but only a few characters of it, so the
+        # result is NOT empty and the all-or-nothing guard cannot fire.
+        doc = self._pdf_with_unmapped_text(pages=40, decodable_runs=40, body="ok")
+        ratio, counts, _ = self._coverage_signals(doc)
+        self.assertGreater(counts["kept"], 0,
+                           "fixture decodes nothing, so the older guard fires "
+                           "and this test would prove nothing about the new one")
+        self.assertGreater(ratio, 0.95, f"fixture drop ratio is only {ratio:.3f}")
+        with self.assertRaises(UndecodableText) as caught:
+            extract_pdf(doc)
+        message = str(caught.exception)
+        self.assertIn("per page", message)
+        self.assertRegex(message, r"9\d\.\d% of the text decoded to glyph IDs")
+
+    def test_a_heavily_dropped_but_readable_document_is_not_refused(self):
+        """The drop ratio alone is not evidence of anything.
+
+        Illustrated books draw most of their text in fonts with no map and
+        still read fine: one scored 0.915 recall against pdftotext having
+        dropped 94.9 per cent of its characters. Refusing on the ratio alone
+        would have thrown away fourteen sound documents out of fifty-three.
+
+        This document drops well over 95 per cent and carries a full page of
+        readable text on every page, so only the per-page clause can save it.
+        """
+        from vanilla_extract.formats.pdf import extract_pdf
+        doc = self._pdf_with_unmapped_text(pages=12, decodable_runs=12,
+                                           body="ordinary sentence " * 12,
+                                           glyph_runs=4000)
+        ratio, _counts, _out = self._coverage_signals(doc)
+        self.assertGreater(ratio, 0.95,
+                           f"fixture drop ratio is only {ratio:.3f}, so the "
+                           f"drop clause rejects it and the per-page clause "
+                           f"is not what this test is measuring")
+        text = extract_pdf(doc)
+        self.assertIn("ordinary sentence", text)
+        self.assertGreater(len(text) / 12, 150,
+                           "fixture does not clear the per-page threshold")
+
+    def test_a_thin_but_sound_document_is_not_refused(self):
+        """A short document is not a broken one.
+
+        The corpus the E2E suite generates contains an 85-character
+        single-page invoice; a per-page floor on its own would refuse it.
+        """
+        from vanilla_extract.formats.pdf import extract_pdf
+        doc = self._pdf_with_unmapped_text(pages=1, decodable_runs=1)
+        text = extract_pdf(doc.replace(b"/Encoding /Identity-H ", b""))
+        self.assertIn("readable", text)
+
     def test_a_name_cannot_override_a_missing_signature(self):
         """A text export saved as report.pdf came back `no_text_found`.
 

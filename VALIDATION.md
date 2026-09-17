@@ -136,7 +136,7 @@ Three layers, because they catch different things.
 
 | Layer | What it is | What it catches |
 |---|---|---|
-| **Unit tests** (104) | `python3 -m unittest discover -s tests` | Logic errors in one function, and every past bug as a regression test |
+| **Unit tests** (107) | `python3 -m unittest discover -s tests` | Logic errors in one function, and every past bug as a regression test |
 | **Benchmark** | `python3 benchmark.py <dir>` | Extraction *quality*, scored against an independent implementation |
 | **End-to-end verification** (176 checks) | `python3 verify_e2e.py` | Whether the product does what its documentation says |
 
@@ -169,14 +169,30 @@ token recall : mean 1.000   median 1.000   min 1.000
 100-578 pages):
 
 ```
-files measured : 53
-token recall   : mean 0.873   median 0.912   min 0.007   max 0.961
->= 0.95        : 4/53  (7.5%)
->= 0.90        : 35/53 (66.0%)
->= 0.50        : 51/53 (96.2%)
+files measured : 52
+token recall   : mean 0.890   median 0.913   min 0.409   max 0.961
+>= 0.99        : 0/52  (0.0%)
+>= 0.95        : 4/52  (7.7%)
+>= 0.90        : 35/52 (67.3%)
+>= 0.50        : 51/52 (98.1%)
 
-encrypted, refused with a clear error: 33  (reported separately, not scored)
+encrypted, refused with a clear error          : 33  (not scored)
+unmapped CID fonts, refused with a clear error : 1   (not scored)
 ```
+
+Two things about that block are deliberate.
+
+**The `>= 0.99` line is shown even though it is zero.** Corpus A's block quotes 210/210 at the
+same threshold. Printing the flattering row and omitting the unflattering one is how a benchmark
+becomes marketing, and this document was doing it.
+
+**The single unmapped-font refusal used to be a score, of 0.007.** A 68-page book returned 2,549
+characters out of 401,034, most of them mojibake, with exit code zero -- a results row, not an
+exception row. That is the blank row nobody notices, which is the failure this whole tool is
+organised around, sitting at the bottom of its own benchmark. The guard that should have caught
+it only fired when *every* run decoded to glyph IDs, and a handful decoding was enough to
+silence it. The mean moving from 0.873 to 0.890 is that one file leaving the scored set;
+extraction did not improve.
 
 Read plainly: **excellent on PDFs produced by software, good but not perfect on complex
 commercial ones, and never quite matching poppler on the hardest.** If you need the last few
@@ -341,7 +357,7 @@ Every one of those is now a named regression test.
 git clone https://github.com/brandonsbutler-ai/vanilla-extract
 cd vanilla_extract
 
-python3 -m unittest discover -s tests -v    # 104 unit tests
+python3 -m unittest discover -s tests -v    # 107 unit tests
 python3 verify_e2e.py                       # 176 end-to-end claim checks
 python3 benchmark.py /path/to/your/pdfs     # quality against pdftotext
 ```

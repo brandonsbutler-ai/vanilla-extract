@@ -29,6 +29,13 @@ from . import pdfcmap
 from ..limits import bounded_inflate
 
 
+# Thresholds for the coverage guard below. Both must trip: measured across 53
+# commercial PDFs, where the drop ratio alone flags 14 sound documents and a
+# per-page floor alone flags the smallest legitimate one.
+_COVERAGE_DROP_RATIO = 0.95
+_COVERAGE_CHARS_PER_PAGE = 150
+
+
 class UndecodableText(Exception):
     """Text was found but its characters cannot be recovered.
 
@@ -205,7 +212,7 @@ def _decode_string(raw, cmap=None):
     return raw.decode("latin-1", errors="replace")
 
 
-def _extract_content(buf, cmaps=None):
+def _extract_content(buf, cmaps=None, tally=None):
     """Pull text out of one decompressed content stream, in drawing order.
 
     `cmaps` maps font resource names to /ToUnicode tables. When the active
@@ -213,6 +220,7 @@ def _extract_content(buf, cmaps=None):
     it; without one, the bytes are an 8-bit encoding and decode directly.
     """
     cmaps = cmaps or {}
+    tally = tally if tally is not None else [0, 0]   # [kept chars, dropped chars]
     out = []
     pending = []          # strings collected since the last operator
     active = None         # CMap of the font selected by the last Tf
@@ -224,13 +232,19 @@ def _extract_content(buf, cmaps=None):
         if c == b"(":
             s, i = _read_literal_string(buf, i)
             decoded = _decode_string(s, active)
-            if not _is_garbage(decoded):
+            if _is_garbage(decoded):
+                tally[1] += len(decoded)
+            else:
+                tally[0] += len(decoded)
                 pending.append(decoded)
             continue
         if c == b"<" and buf[i + 1:i + 2] != b"<":
             s, i = _read_hex_string(buf, i)
             decoded = _decode_string(s, active)
-            if not _is_garbage(decoded):
+            if _is_garbage(decoded):
+                tally[1] += len(decoded)
+            else:
+                tally[0] += len(decoded)
                 pending.append(decoded)
             continue
         if c == b"/":
@@ -320,6 +334,8 @@ def extract_pdf(fh):
         cmaps = {}
     pages = []
     saw_text_ops = False
+    tally = [0, 0]            # [characters kept, characters dropped as glyph IDs]
+    streams = 0
     for header, raw in _iter_streams(data):
         body = _decompress(header, raw)
         if not body:
@@ -327,7 +343,8 @@ def extract_pdf(fh):
         if b"Tj" not in body and b"TJ" not in body:
             continue          # not a text-bearing content stream
         saw_text_ops = True
-        text = _extract_content(body, cmaps)
+        streams += 1
+        text = _extract_content(body, cmaps, tally)
         if text.strip():
             pages.append(text)
     joined = "\n".join(pages)
@@ -339,4 +356,30 @@ def extract_pdf(fh):
             "PDF text uses fonts with no /ToUnicode map (typically CID-keyed "
             "Identity-H); characters cannot be recovered without parsing the "
             "embedded font program")
+
+    # All-or-nothing was not enough. A 68-page book came back with 2,549
+    # characters of mostly mojibake and exit code 0, because a handful of runs
+    # decoded and the check above only fires when NONE do. That is the blank
+    # row nobody notices, which is the thing this tool exists to prevent.
+    #
+    # Neither signal works alone. Dropping 95% of the characters is normal in
+    # illustrated books -- one scored 0.915 recall against pdftotext having
+    # dropped 94.9% -- so the drop ratio on its own flags 14 healthy documents.
+    # A thin page is normal too: the invoice the test corpus generates is 85
+    # characters on one page. Together they are specific: across 53 commercial
+    # PDFs the pair fires once, on the document that is actually broken, and
+    # the next-nearest file is eight times clear of the threshold.
+    kept, dropped = tally
+    total = kept + dropped
+    if saw_text_ops and total and streams:
+        drop_ratio = dropped / total
+        per_page = len(result) / streams
+        if drop_ratio >= _COVERAGE_DROP_RATIO and per_page < _COVERAGE_CHARS_PER_PAGE:
+            raise UndecodableText(
+                f"only {len(result):,} characters recovered from {streams:,} "
+                f"text-bearing pages ({per_page:.0f} per page); "
+                f"{drop_ratio * 100:.1f}% of the text decoded to glyph IDs "
+                f"rather than characters. The fonts carry no usable "
+                f"/ToUnicode map, so what little came back is not "
+                f"trustworthy either")
     return result
