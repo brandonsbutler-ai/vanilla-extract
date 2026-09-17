@@ -17,14 +17,18 @@ from .. import __version__
 from .. import batch, recognize, report
 from ..provenance import Workspace
 
-# Extensions the batch reader will not attempt. Mirrored here so the index can
-# say "6 of 41 files are not documents" before anything is read.
-_SKIP = (".pyc", ".pyo", ".so", ".dll", ".exe", ".bin", ".o", ".a",
-         ".class", ".jar", ".db", ".sqlite", ".lock")
+# The batch reader's own "not a document" list, imported rather than mirrored so
+# the count this index shows and the set the run processes cannot drift apart.
+from ..batch import SKIP_EXT as _SKIP
 
 
 class DropError(Exception):
     """A dropped thing this application cannot work with."""
+
+
+class Cancelled(Exception):
+    """Raised out of a run when the caller asks it to stop. Not an error --
+    it is how a Stop button reaches a batch already partway through."""
 
 
 def folders_from_drop(payload):
@@ -320,12 +324,17 @@ class Session:
         stamp = time.strftime("%Y%m%d-%H%M%S")
         return os.path.join(parent, f"{base}-extracted-{stamp}")
 
-    def run(self, on_progress=None, on_stage=None):
+    def run(self, on_progress=None, on_stage=None, should_cancel=None):
         """Do the work. Returns a Result.
 
         `on_progress(done, total, name)` is called per document and
         `on_stage(text)` when the run moves between phases. Both are optional
         so this can be driven from a test with no window attached.
+
+        `should_cancel()` is polled once per document; when it returns true the
+        run stops at the next document boundary by raising Cancelled, which
+        `batch.run` propagates (a callback that raises stops the batch). Partial
+        output is left in the dated directory for the caller to discard.
         """
         if not self.folders:
             raise DropError("no folder loaded")
@@ -354,6 +363,8 @@ class Session:
         done = [0]
 
         def progress(label, ok):
+            if should_cancel and should_cancel():
+                raise Cancelled()
             done[0] += 1
             if on_progress:
                 on_progress(done[0], total, os.path.basename(str(label)))
