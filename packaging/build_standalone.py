@@ -157,7 +157,9 @@ def build_cli():
         "--specpath", os.path.join(ROOT, "build"),
         "--console",
         # Nothing to bundle beyond the package itself; no data files, no hooks.
-        os.path.join(ROOT, "vanilla_extract", "__main__.py"),
+        # The root has to be importable for the launcher's absolute import.
+        "--paths", ROOT,
+        os.path.join(ROOT, "packaging", "cli_entry.py"),
     ]
     print("running:", " ".join(cmd))
     result = subprocess.run(cmd, cwd=ROOT)

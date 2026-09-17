@@ -1321,6 +1321,37 @@ def verify_documentation(workdir):
                     and a.option_strings[0] != "--help")
     check("every option has help text", not nohelp, nohelp)
 
+    # The packaged launchers, IMPORTED AND RESOLVED rather than read.
+    #
+    # The bundled command line shipped broken from the day the installer was
+    # written: vanilla_extract/__main__.py uses relative imports, which is
+    # right for `python -m vanilla_extract` and impossible for a script
+    # PyInstaller runs as a top-level module, so the binary died on its first
+    # line. Both platform installers install that binary. The build script
+    # said "smoke-test it before shipping"; an instruction is not a check.
+    import importlib.util as _ilu
+    for entry, wants_toolkit in (("cli_entry.py", False), ("app_entry.py", True)):
+        path = os.path.join(ROOT, "packaging", entry)
+        if not os.path.isfile(path):
+            check(f"packaging/{entry} exists", False, path)
+            continue
+        spec = _ilu.spec_from_file_location(f"_entry_{entry[:-3]}", path)
+        module = _ilu.module_from_spec(spec)
+        try:
+            spec.loader.exec_module(module)
+            loaded, why = True, ""
+        except ImportError as exc:
+            loaded = wants_toolkit and "PySide6" in str(exc)
+            why = f"skipped: {exc}" if loaded else str(exc)
+        except Exception as exc:                          # noqa: BLE001
+            loaded, why = False, f"{type(exc).__name__}: {exc}"
+        check(f"packaging/{entry} imports without a relative-import error",
+              loaded, why)
+        if loaded and not why:
+            check(f"packaging/{entry} exposes a callable main",
+                  callable(getattr(module, "main", None)),
+                  sorted(n for n in vars(module) if not n.startswith("_"))[:6])
+
     # Version agreement across the three places it appears.
     import tomllib
     from vanilla_extract import __version__

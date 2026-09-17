@@ -409,7 +409,7 @@ Two layers, both runnable:
 
 ```bash
 python3 -m unittest discover -s tests -v     # 116 unit tests
-python3 verify_e2e.py                        # 179 end-to-end claim checks
+python3 verify_e2e.py                        # 182 end-to-end claim checks
 ```
 
 `verify_e2e.py` exists because unit tests check units, not promises. It generates a fresh corpus
