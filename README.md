@@ -337,6 +337,28 @@ checked, what the checks measured, the defects they found, and a section on what
 **not** prove. `python3 generate_validation_pdf.py` renders it to a PDF for anyone who would
 rather have one.
 
+## The desktop window
+
+```bash
+pip install vanilla-extract[gui]
+vanilla-gui
+```
+
+Drop a folder onto the window — or several, one at a time; each drop adds to the
+job and the summary shows what came from where. Pick what to do with it, press
+Run, and the review report opens in your browser.
+
+**The window is the only part of this project with a dependency.** `pip install
+vanilla-extract` installs a library and a command line that import nothing
+outside the standard library, and that is checked on every run of the
+verifier. `[gui]` adds PySide6 for the window, and nothing else uses it.
+
+It is a native window rather than a local web page for one reason: a drop has
+to carry the real path. A browser hands over copies of the files, without the
+owner, permissions, inode or creation time — which is most of what the
+file-state datasheet exists to record, so a browser-based drop would quietly
+make that feature untrue.
+
 ## Options
 
 Every option the command accepts. `--help` prints the same list.
@@ -365,8 +387,8 @@ Every option the command accepts. `--help` prints the same list.
 Two layers, both runnable:
 
 ```bash
-python3 -m unittest discover -s tests -v     # 109 unit tests
-python3 verify_e2e.py                        # 178 end-to-end claim checks
+python3 -m unittest discover -s tests -v     # 116 unit tests
+python3 verify_e2e.py                        # 179 end-to-end claim checks
 ```
 
 `verify_e2e.py` exists because unit tests check units, not promises. It generates a fresh corpus
@@ -385,7 +407,7 @@ figures here are whatever it last measured, not what would read best.
 python3 -m unittest discover -s tests -v
 ```
 
-109 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
+116 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
 there is nothing opaque in the repo. The suite covers the cases that actually break extractors:
 balanced parens inside PDF strings, escaped close-parens, octal escapes, odd hex nibbles,
 RTF `\fonttbl` contents leaking into output, cp1252 fallback, and misnamed files -- plus the

@@ -1066,8 +1066,17 @@ def verify_packaging_and_deps(workdir):
                 for m in mods:
                     if m and m not in stdlib and m != "vanilla_extract":
                         offenders.append(f"{f}: {m}")
-    check("no module imports anything outside the standard library",
-          not offenders, offenders)
+    # The claim is two-part now, and the check is too, because a single
+    # sentence would be false in one direction or the other. The LIBRARY
+    # imports nothing outside the standard library; the desktop WINDOW imports
+    # a toolkit and is the only thing that does. Both halves are asserted, so
+    # a stray import in the library cannot hide behind the window's exemption.
+    library = [o for o in offenders if "/gui/" not in o and not o.startswith("qt_app")]
+    check("the library imports nothing outside the standard library",
+          not library, library)
+    window = [o for o in offenders if o not in library]
+    check("only the desktop window imports a toolkit, and only PySide6",
+          all("PySide6" in o for o in window), window)
 
     # Parsed and RESOLVED rather than string-matched. "dependencies = []"
     # appearing in the file proves nothing about what the build backend will
@@ -1087,8 +1096,8 @@ def verify_packaging_and_deps(workdir):
           project_cfg.get("dependencies"))
 
     scripts = project_cfg.get("scripts", {})
-    check("exactly one console entry point, named `vanilla`",
-          list(scripts) == ["vanilla"], scripts)
+    check("the console entry points are `vanilla` and `vanilla-gui`",
+          sorted(scripts) == ["vanilla", "vanilla-gui"], scripts)
     target = scripts.get("vanilla", "")
     module_name, _, func_name = target.partition(":")
     resolved = None
@@ -1346,10 +1355,28 @@ def verify_documentation(workdir):
     with open(os.path.join(ROOT, "pyproject.toml"), "rb") as fh:
         declared_scripts = list(tomllib.load(fh).get("project", {})
                                 .get("scripts", {}))
-    documented = [c for c in declared_scripts if f"{c} --batch" in readme]
-    check("the command the docs tell you to type is the one that gets installed",
-          documented == declared_scripts,
-          f"declared {declared_scripts}, documented {documented}")
+    # A command counts as documented when the README SHOWS IT BEING RUN: it
+    # appears as the first word of a line inside a fenced shell block. The
+    # earlier form looked for "<command> --batch", which is fine for the one
+    # command that takes --batch and impossible for any command that does not
+    # -- the window has no batch mode, so adding it made this unsatisfiable.
+    # Walked line by line rather than matched with a regex: a non-greedy
+    # pattern over ``` fences pairs the CLOSE of one block with the OPEN of
+    # the next whenever a block is untagged, and this README has several, so
+    # the "commands" it found included every word of the prose in between.
+    shown, inside = set(), False
+    for line in readme.splitlines():
+        if line.startswith("```"):
+            inside = not inside
+            continue
+        if inside:
+            first = line.strip().lstrip("$ ").split(" ", 1)[0]
+            if first and not first.startswith("#"):
+                shown.add(first)
+    undocumented = [c for c in declared_scripts if c not in shown]
+    check("every command the package installs is shown being run in the README",
+          not undocumented,
+          f"declared {declared_scripts}, shown in the README {sorted(shown)}")
 
     # Benchmark figures quoted in the docs must match a live run.
     #

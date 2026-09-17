@@ -11,6 +11,7 @@ import io
 import os
 import sys
 from html.parser import HTMLParser
+import shutil
 import unittest
 import zipfile
 import zlib
@@ -590,6 +591,101 @@ class TestProvenance(unittest.TestCase):
             with open(ws.manifest_path, encoding="utf-8") as fh:
                 json.load(fh)          # parses => the write completed or did not happen
             self.assertFalse(os.path.exists(ws.manifest_path + ".tmp"))
+
+
+class TestDesktopSession(unittest.TestCase):
+    """The window's decisions, driven with no window attached.
+
+    All of this lives in a module that imports nothing outside the standard
+    library, which is why it can be tested here at all -- the toolkit is in
+    qt_app.py and nothing in this file touches it.
+    """
+
+    def _tree(self, layout):
+        import tempfile
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root, True)
+        for name, count in layout.items():
+            folder = os.path.join(root, name)
+            os.makedirs(folder, exist_ok=True)
+            for i in range(count):
+                with open(os.path.join(folder, f"{name}{i}.txt"), "w",
+                          encoding="utf-8") as fh:
+                    fh.write(f"Invoice Number: {name.upper()}-{i}\n"
+                             f"Invoice Date: 2026-08-0{i + 1}\n"
+                             f"Customer: Northwind\nTotal: ${i + 1}.00\n")
+        return root
+
+    def test_several_folders_become_one_job(self):
+        """Drops ADD. Four folders dropped one at a time are one run."""
+        from vanilla_extract.gui.session import Session
+        root = self._tree({"august": 3, "september": 4})
+        s = Session(out_dir=os.path.join(root, "out"))
+        s.load([os.path.join(root, "august")])
+        index = s.load([os.path.join(root, "september")], add=True)
+        self.assertEqual(len(index.folders), 2)
+        self.assertEqual(index.count, 7)
+        self.assertIn("2 folders", index.summary())
+        self.assertEqual(sorted(index.per_folder.values()), [3, 4])
+
+    def test_a_parent_folder_supersedes_one_already_loaded(self):
+        """Dropping a folder and then its parent must not read it twice."""
+        from vanilla_extract.gui.session import Session
+        root = self._tree({"august": 3, "september": 4})
+        s = Session(out_dir=os.path.join(root, "out"))
+        s.load([os.path.join(root, "august")])
+        index = s.load([root], add=True)
+        self.assertEqual(index.folders, [os.path.abspath(root)])
+        self.assertEqual(index.count, 7, "files were counted twice")
+
+    def test_a_child_of_a_loaded_folder_adds_nothing(self):
+        from vanilla_extract.gui.session import Session
+        root = self._tree({"august": 3})
+        s = Session(out_dir=os.path.join(root, "out"))
+        s.load([root])
+        index = s.load([os.path.join(root, "august")], add=True)
+        self.assertEqual(index.folders, [os.path.abspath(root)])
+
+    def test_a_dropped_file_resolves_to_its_folder(self):
+        from vanilla_extract.gui.session import folders_from_drop
+        root = self._tree({"august": 2})
+        one = os.path.join(root, "august", "august0.txt")
+        self.assertEqual(folders_from_drop([one]),
+                         [os.path.abspath(os.path.join(root, "august"))])
+
+    def test_a_tk_payload_with_spaces_in_the_path_survives(self):
+        """Tk braces a path containing a space; two braced paths are two."""
+        from vanilla_extract.gui.session import folders_from_drop
+        import tempfile
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root, True)
+        first = os.path.join(root, "my invoices")
+        second = os.path.join(root, "more invoices")
+        os.makedirs(first)
+        os.makedirs(second)
+        got = folders_from_drop("{%s} {%s}" % (first, second))
+        self.assertEqual(got, [os.path.abspath(first), os.path.abspath(second)])
+
+    def test_output_never_lands_inside_the_folder_being_read(self):
+        """Otherwise the next run reads its own report."""
+        from vanilla_extract.gui.session import Session
+        root = self._tree({"august": 2})
+        folder = os.path.join(root, "august")
+        s = Session()
+        s.load([folder])
+        out = os.path.abspath(s.output_dir())
+        self.assertFalse(out.startswith(os.path.abspath(folder) + os.sep))
+
+    def test_a_fast_run_does_not_report_zero_seconds(self):
+        """"0.0s" reads like a failure."""
+        from vanilla_extract.gui.session import Result
+        r = Result("/x", "/y")
+        r.seconds = 0.021
+        self.assertIn("ms", r.duration())
+        r.seconds = 4.2
+        self.assertIn("seconds", r.duration())
+        r.seconds = 200
+        self.assertIn("minutes", r.duration())
 
 
 class TestHostileInput(unittest.TestCase):

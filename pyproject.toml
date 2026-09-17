@@ -28,12 +28,17 @@ dependencies = []
 
 [project.optional-dependencies]
 build = ["pyinstaller>=6.0"]
+# The LIBRARY has no dependencies. The desktop window has one, and it lives
+# here so that `pip install vanilla-extract` stays dependency-free and
+# `pip install vanilla-extract[gui]` adds the toolkit for the window.
+gui = ["PySide6-Essentials>=6.5"]
 
 [project.scripts]
 vanilla = "vanilla_extract.__main__:main"
+vanilla-gui = "vanilla_extract.gui.qt_app:main"
 
 [project.urls]
 Homepage = "https://github.com/brandonsbutler-ai/vanilla-extract"
 
 [tool.setuptools]
-packages = ["vanilla_extract", "vanilla_extract.formats"]
+packages = ["vanilla_extract", "vanilla_extract.formats", "vanilla_extract.gui"]
