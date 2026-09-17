@@ -6,9 +6,12 @@ input is untrusted by definition. Two bounds matter in practice.
 A ZIP DECOMPRESSION BOMB is the live risk. A 200 KB .docx can declare a 200 MB
 document.xml -- a ratio above 1000:1 -- and a reader that simply calls
 `zf.read(name)` will allocate all of it. Verified on this library before these
-limits existed: 199 KB in, 200 MB allocated, no error. So every archive member
-is checked against its DECLARED uncompressed size before a byte is read, and a
-running budget caps the archive as a whole.
+limits existed: 199 KB in, 200 MB allocated, no error. Every archive member is
+first checked against its DECLARED uncompressed size, which rejects an honest
+bomb cheaply; but the declared size lives in the archive's own header and can be
+forged, so the READ is bounded too -- it decompresses incrementally and stops at
+the ratio ceiling, refusing a member whose REAL stream runs past it regardless
+of what it claims. A running budget caps the archive as a whole.
 
 XML ENTITY EXPANSION ("billion laughs") was measured and found already bounded:
 the expat parser behind xml.etree stops expanding a few levels in, capping the
@@ -106,6 +109,32 @@ def check_member(info, budget=None):
 
 
 def read_member(zf, info, budget=None):
-    """Read one archive member, but only after it passes check_member()."""
+    """Read one archive member, bounded by its REAL decompressed size.
+
+    check_member vets the member's DECLARED size, which lives in the archive's
+    own header and can be forged -- write file_size=100 into a header whose
+    stream really inflates to 200 MB and the declared-size and ratio checks both
+    wave it through. So the read itself is bounded too: it stops at the largest
+    size the compressed bytes could legitimately reach (the compression-ratio
+    ceiling, capped by the per-member limit) and refuses a member whose real
+    stream runs past that, before it is all allocated.
+
+    `zf.read(info)` cannot do this. It is `read(-1)`, which decompresses the
+    whole stream in one unbounded call and only then truncates to the declared
+    size -- so it allocates the bomb in full and discovers the lie too late.
+    Reading a bounded number of bytes decompresses incrementally and stops.
+    """
     check_member(info, budget)
-    return zf.read(info)
+    name = getattr(info, "filename", "member")
+    packed = getattr(info, "compress_size", 0) or 0
+    ceiling = MAX_MEMBER_BYTES
+    if packed > 0:
+        ceiling = min(ceiling, packed * MAX_COMPRESSION_RATIO)
+    with zf.open(info) as fh:
+        data = fh.read(ceiling + 1)
+    if len(data) > ceiling:
+        raise ArchiveTooLarge(
+            f"{name}: decompresses past {ceiling // (1024 * 1024)} MB "
+            f"({packed} compressed bytes at a {MAX_COMPRESSION_RATIO}:1 cap), "
+            f"a decompression bomb rather than a document")
+    return data

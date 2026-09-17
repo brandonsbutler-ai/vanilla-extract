@@ -14,7 +14,7 @@ import os
 import sys
 import webbrowser
 
-from .session import DropError, Session, folders_from_drop
+from .session import Cancelled, DropError, Session, folders_from_drop
 
 # GOLD ON BLACK, with the particulars in a brighter accent.
 #
@@ -244,17 +244,26 @@ def build(qt, session=None):
         stage = QtCore.Signal(str)
         done = QtCore.Signal(object)
         failed = QtCore.Signal(str)
+        cancelled = QtCore.Signal()
 
         def __init__(self, session):
             super().__init__()
             self.session = session
+            self._cancel = False
+
+        def cancel(self):
+            """Ask the run to stop at the next document boundary."""
+            self._cancel = True
 
         def run(self):
             try:
                 result = self.session.run(
                     on_progress=lambda n, t, name: self.tick.emit(n, t, name),
-                    on_stage=self.stage.emit)
+                    on_stage=self.stage.emit,
+                    should_cancel=lambda: self._cancel)
                 self.done.emit(result)
+            except Cancelled:
+                self.cancelled.emit()
             except Exception as exc:                      # noqa: BLE001
                 self.failed.emit(f"{type(exc).__name__}: {exc}")
 
@@ -319,6 +328,7 @@ def build(qt, session=None):
             super().__init__()
             self.session = session
             self.worker = None
+            self._running = False
             self.steps = {}
             self.setObjectName("root")
             self.setWindowTitle("Vanilla Extract")
@@ -451,7 +461,7 @@ def build(qt, session=None):
             self.run_btn.setObjectName("primary")
             self.run_btn.setCursor(QtCore.Qt.PointingHandCursor)
             self.run_btn.setEnabled(False)
-            self.run_btn.clicked.connect(self._run)
+            self.run_btn.clicked.connect(self._primary)
             self.report_btn = QtWidgets.QPushButton("Open report  ↗")
             self.report_btn.setEnabled(False)
             self.report_btn.clicked.connect(self._open_report)
@@ -575,11 +585,18 @@ def build(qt, session=None):
             self._say("" if index.count
                       else "nothing in that folder can be read", MAGENTA)
 
+        def _primary(self):
+            """The run button is Stop while a scan is running, Run otherwise."""
+            if self._running:
+                self._stop()
+            else:
+                self._run()
+
         def _run(self):
             for key, box in self.boxes.items():
                 setattr(self.session.options, key, box.isChecked())
-            self.run_btn.setEnabled(False)
-            self.run_btn.setText("Working…")
+            self._running = True
+            self.run_btn.setText("Stop")            # the button now cancels
             self.report_btn.setEnabled(False)
             self.files_btn.setEnabled(False)
             self._clear_results()
@@ -591,7 +608,24 @@ def build(qt, session=None):
             self.worker.stage.connect(lambda t: self._say(t, MUTED))
             self.worker.done.connect(self._finish)
             self.worker.failed.connect(self._failed)
+            self.worker.cancelled.connect(self._stopped)
             self.worker.start()
+
+        def _stop(self):
+            if self.worker is not None:
+                self.worker.cancel()
+            self.run_btn.setEnabled(False)
+            self.run_btn.setText("Stopping…")
+
+        def _stopped(self):
+            self._running = False
+            self.bar.hide()
+            self.run_btn.setEnabled(True)
+            self.run_btn.setText("Run")
+            # "discarded" would be a lie: nothing here deletes the dated
+            # directory, and output_dir() cannot even name it after the fact
+            # (it re-stamps the time on every call). Say what is true.
+            self._say("stopped — partial output left in place", MUTED)
 
         def _tick(self, n, total, name):
             self.bar.setRange(0, max(total, 1))
@@ -599,12 +633,14 @@ def build(qt, session=None):
             self._say(f"{n} of {total}   ·   {name}", MUTED)
 
         def _failed(self, message):
+            self._running = False
             self.bar.hide()
             self.run_btn.setEnabled(True)
             self.run_btn.setText("Run")
             self._say(message, MAGENTA)
 
         def _finish(self, result):
+            self._running = False
             self.bar.hide()
             self.run_btn.setEnabled(True)
             self.run_btn.setText("Run again")

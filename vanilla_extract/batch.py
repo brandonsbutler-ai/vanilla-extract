@@ -46,9 +46,14 @@ from .formats.pdf import EncryptedPDF, UndecodableText
 # and the extension said skip. A corrupt archive is exactly the thing a caller
 # needs told about, so it now falls through to extraction and is reported as
 # an unsupported format instead.
-_SKIP_EXT = (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".svg", ".webp",
-             ".mp3", ".mp4", ".mov", ".avi", ".wav", ".exe", ".dll", ".so",
-             ".dylib", ".woff", ".woff2", ".ttf", ".otf")
+# ONE list of "never a document", shared with the GUI pre-scan (session.Index)
+# so the files it counts are exactly the files this walk processes. Two divergent
+# copies drifted once and let a run walk .git/.venv, copy 36 GB and count past
+# 100%. It covers images/audio/video/fonts AND compiled/code/database artifacts.
+SKIP_EXT = (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".svg", ".webp",
+            ".mp3", ".mp4", ".mov", ".avi", ".wav", ".woff", ".woff2", ".ttf",
+            ".otf", ".pyc", ".pyo", ".so", ".dylib", ".dll", ".exe", ".bin",
+            ".o", ".a", ".class", ".jar", ".db", ".sqlite", ".lock")
 
 
 class Field:
@@ -89,12 +94,48 @@ class Field:
 # instead of the filename.
 
 
+def _in_scope(name):
+    """A candidate document: not a non-document extension. The SAME rule the
+    GUI pre-scan applies, so what runs is exactly what was counted."""
+    return not name.lower().endswith(SKIP_EXT)
+
+
 def _walk(paths, recurse_archives=True):
-    """Yield (label, loader) for every candidate document under `paths`."""
+    """Yield (label, loader) for every candidate document under `paths`.
+
+    SKIP_EXT files are dropped at BOTH the file level and inside archives, and
+    ON DISK a directory whose name starts with a dot (.git, .venv, caches) is
+    pruned as well, so a scanned tree's version control and virtualenv are never
+    walked, copied or counted. This rule matches session.Index exactly.
+
+    The dot-directory prune is the on-disk walk only. A `.git/config` carried
+    INSIDE an archive still comes through -- it has no SKIP_EXT extension, so it
+    reaches extraction and is reported as an unsupported format. That is a row
+    in the report rather than a silent drop, which is the behaviour this module
+    promises; pruning it too would be a change of product behaviour, not a fix.
+    """
+    def _archive(full):
+        try:
+            with zipfile.ZipFile(full) as zf:
+                members = [i for i in zf.infolist() if not i.is_dir()]
+        except (zipfile.BadZipFile, OSError, RuntimeError):
+            yield full, None
+            return
+        for i, info in enumerate(members):
+            if not _in_scope(info.filename):
+                continue
+            dup = sum(1 for m in members[:i] if m.filename == info.filename)
+            suffix = f"#{dup + 1}" if dup else ""
+            yield f"{full}!{info.filename}{suffix}", (full, info)
+
+    _ARCHIVE_DOC = (".docx", ".pptx", ".xlsx", ".odt")
     for path in paths:
         if os.path.isdir(path):
-            for root, _dirs, files in os.walk(path):
+            for root, dirs, files in os.walk(path):
+                dirs[:] = [d for d in dirs if not d.startswith(".")]
                 for name in sorted(files):
+                    if not _in_scope(name):
+                        continue
                     full = os.path.join(root, name)
                     # Recurse into archives found by walking, too. Previously
                     # only archives named on the command line were opened, so a
@@ -102,40 +143,18 @@ def _walk(paths, recurse_archives=True):
                     # AND no exception row -- it simply disappeared, which is
                     # the one thing this module promises never to do.
                     if (recurse_archives and zipfile.is_zipfile(full)
-                            and not full.lower().endswith(
-                                (".docx", ".pptx", ".xlsx", ".odt"))):
-                        try:
-                            with zipfile.ZipFile(full) as zf:
-                                members = [i for i in zf.infolist() if not i.is_dir()]
-                        except (zipfile.BadZipFile, OSError):
-                            yield full, None
-                            continue
-                        for i, info in enumerate(members):
-                            dup = sum(1 for m in members[:i]
-                                      if m.filename == info.filename)
-                            suffix = f"#{dup + 1}" if dup else ""
-                            yield f"{full}!{info.filename}{suffix}", (full, info)
-                        continue
-                    yield full, None
+                            and not full.lower().endswith(_ARCHIVE_DOC)):
+                        yield from _archive(full)
+                    else:
+                        yield full, None
         elif zipfile.is_zipfile(path) and recurse_archives and not path.lower().endswith(
-                (".docx", ".pptx", ".xlsx", ".odt")):
-            # is_zipfile only validates the end-of-central-directory record, so
-            # an archive with a damaged central directory passes it and then
-            # raises here. Unguarded, that killed the whole batch from inside
-            # the generator -- outside run()'s try -- which is exactly what this
-            # module promises never to happen.
-            try:
-                with zipfile.ZipFile(path) as zf:
-                    members = [i for i in zf.infolist() if not i.is_dir()]
-            except (zipfile.BadZipFile, OSError, RuntimeError):
-                yield path, None
-                continue
-            for i, info in enumerate(members):
-                # The index disambiguates repeated names in the label.
-                dup = sum(1 for m in members[:i] if m.filename == info.filename)
-                suffix = f"#{dup + 1}" if dup else ""
-                yield f"{path}!{info.filename}{suffix}", (path, info)
-        else:
+                _ARCHIVE_DOC):
+            # is_zipfile only validates the end-of-central-directory record, so a
+            # damaged central directory passes it and raises inside _archive --
+            # which yields (path, None) rather than killing the batch, the one
+            # thing this module promises never to happen.
+            yield from _archive(path)
+        elif _in_scope(path):
             yield path, None
 
 
@@ -220,9 +239,6 @@ def run(paths, fields=None, include_text=True, max_text=None, auto_labels=None,
         # would have to remember to set.
         _failed_before = len(exceptions)
         try:
-            if label.lower().endswith(_SKIP_EXT):
-                continue
-
             meta = None
             if collect_metadata or workspace is not None:
                 try:

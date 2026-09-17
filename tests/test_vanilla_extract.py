@@ -306,17 +306,43 @@ class TestBatch(unittest.TestCase):
         self.assertEqual(reasons, {"c.pdf": "encrypted"})
 
     def test_unreadable_file_never_aborts_the_batch(self):
-        """One bad document must not cost the caller the other 399."""
+        """One bad document must not cost the caller the other 399.
+
+        The unreadable file has a NON-skipped extension (.dat): a skipped
+        extension is intentionally not a document and is dropped, not reported.
+        """
         import tempfile
         from vanilla_extract.batch import run
         with tempfile.TemporaryDirectory() as d:
             self._corpus(d)
-            with open(os.path.join(d, "e.bin"), "wb") as fh:
+            with open(os.path.join(d, "e.dat"), "wb") as fh:
                 fh.write(b"\x00\x01\x02\x03\x00\x01")
             results, exceptions = run([d])
         self.assertEqual(len(results), 2)
         self.assertIn("unsupported_format",
                       {e["reason"] for e in exceptions})
+
+    def test_skipped_extensions_and_dot_dirs_are_never_walked(self):
+        """The run must process exactly what the pre-scan counts: a .so binary
+        and anything under a dot-directory (.git, .venv) are out of scope, so
+        they produce neither a result nor an exception -- the bug that let a
+        scan walk .git/.venv, copy them, and count past 100%."""
+        import tempfile
+        from vanilla_extract.batch import run
+        with tempfile.TemporaryDirectory() as d:
+            open(os.path.join(d, "keep.txt"), "w").write("real document text")
+            open(os.path.join(d, "lib.so"), "wb").write(b"\x7fELF binary")
+            os.makedirs(os.path.join(d, ".git"))
+            open(os.path.join(d, ".git", "config"), "w").write("[core]\n")
+            os.makedirs(os.path.join(d, ".venv"))
+            open(os.path.join(d, ".venv", "pkg.py"), "w").write("x = 1\n")
+            results, exceptions = run([d])
+        touched = {os.path.basename(r.get("path", "")) for r in results} | \
+                  {os.path.basename(e.get("path", "")) for e in exceptions}
+        self.assertEqual(len(results), 1)
+        self.assertNotIn("lib.so", touched)
+        self.assertNotIn("config", touched)
+        self.assertNotIn("pkg.py", touched)
 
     def test_empty_document_is_an_exception_not_a_blank_row(self):
         """A scan with no text layer must be named, not returned as empty."""
@@ -366,6 +392,37 @@ class TestBatch(unittest.TestCase):
             self.assertEqual(written, 0)
             with open(path, encoding="utf-8") as fh:
                 self.assertEqual(fh.read().strip(), "file,reason,detail")
+
+
+class TestSessionCancel(unittest.TestCase):
+    """A run must be stoppable partway through -- the GUI had no way to, and a
+    scan that walked the wrong tree could not be halted. session.Session.run
+    polls should_cancel() per document and raises Cancelled to stop the batch."""
+
+    def _corpus(self, d, n):
+        for i in range(n):
+            with open(os.path.join(d, f"doc{i}.txt"), "w", encoding="utf-8") as fh:
+                fh.write(f"document number {i} with some ordinary text")
+
+    def test_a_run_stops_when_asked_and_runs_fully_when_not(self):
+        import tempfile
+        from vanilla_extract.gui.session import Session, Cancelled
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(d, "docs"); os.makedirs(src)
+            self._corpus(src, 12)
+            seen = []
+            sess = Session(out_dir=os.path.join(d, "o1"))
+            sess.load(src)
+            with self.assertRaises(Cancelled):
+                sess.run(on_progress=lambda n, t, name: seen.append(n),
+                         should_cancel=lambda: len(seen) >= 4)
+            self.assertLess(len(seen), 12, "cancel did not stop the run early")
+
+            full = []
+            sess2 = Session(out_dir=os.path.join(d, "o2"))
+            sess2.load(src)
+            sess2.run(on_progress=lambda n, t, name: full.append(n))
+            self.assertEqual(len(full), 12, "an uncancelled run must process all")
 
 
 class TestRecognize(unittest.TestCase):
@@ -703,6 +760,75 @@ class TestHostileInput(unittest.TestCase):
         bomb = self._zip("word/document.xml", b"A" * (200 * 1024 * 1024))
         with self.assertRaises(ArchiveTooLarge):
             extract(bomb, "bomb.docx")
+
+    def _forged_size_bomb(self, real_mb=200):
+        """A docx whose header LIES: it declares file_size=100 for a member
+        whose deflate stream really inflates to `real_mb` MB. The honest-size
+        check waves it through, so only a bounded read stops it."""
+        import struct
+        payload = b"A" * (real_mb * 1024 * 1024)
+        FAKE = 100
+        def member(name, data, off):
+            c = zlib.compressobj(9, zlib.DEFLATED, -15)
+            comp = c.compress(data) + c.flush()
+            crc = zlib.crc32(data) & 0xffffffff
+            nm = name.encode()
+            lfh = struct.pack("<IHHHHHIIIHH", 0x04034b50, 20, 0, 8, 0, 0,
+                              crc, len(comp), FAKE, len(nm), 0) + nm
+            cd = struct.pack("<IHHHHHHIIIHHHHHII", 0x02014b50, 20, 20, 0, 8, 0,
+                             0, crc, len(comp), FAKE, len(nm), 0, 0, 0, 0, 0,
+                             off) + nm
+            return lfh + comp, cd
+        ct = b'<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>'
+        buf, cds, off = io.BytesIO(), [], 0
+        for name, data in (("word/document.xml", payload),
+                           ("[Content_Types].xml", ct)):
+            body, cd = member(name, data, off)
+            buf.write(body); cds.append(cd); off += len(body)
+        cd_bytes = b"".join(cds); cd_off = off
+        buf.write(cd_bytes)
+        buf.write(struct.pack("<IHHHHIIH", 0x06054b50, 0, 0, len(cds),
+                              len(cds), len(cd_bytes), cd_off, 0))
+        return buf.getvalue()
+
+    def test_a_forged_member_size_cannot_exhaust_memory(self):
+        # A member can forge a tiny declared size to slip past the declared-size
+        # check while its real stream inflates to 200 MB. Both the fixed and the
+        # unbounded reader raise (a CRC mismatch), so the exception type proves
+        # nothing -- the DIFFERENCE is memory. Run the extraction under a hard
+        # address-space cap well below the bomb: the unbounded read dies with
+        # MemoryError, the bounded read refuses cleanly under the cap.
+        import subprocess
+        import tempfile
+        import textwrap
+        fd, path = tempfile.mkstemp(suffix=".docx")
+        os.write(fd, self._forged_size_bomb(200))
+        os.close(fd)
+        self.addCleanup(os.remove, path)
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        code = textwrap.dedent(f"""
+            import resource, sys
+            cap = 250 * 1024 * 1024
+            resource.setrlimit(resource.RLIMIT_AS, (cap, cap))
+            sys.path.insert(0, {repo!r})
+            from vanilla_extract.formats import ooxml
+            try:
+                ooxml.extract_docx(open({path!r}, "rb"))
+                print("RETURNED")
+            except MemoryError:
+                print("MEMORYERROR")
+            except Exception as e:
+                print("REFUSED", type(e).__name__)
+        """)
+        r = subprocess.run([sys.executable, "-c", code],
+                           capture_output=True, text=True, timeout=60)
+        out = (r.stdout + r.stderr)
+        self.assertNotIn("MemoryError", out,
+                         "the forged-size bomb exhausted memory under the cap")
+        self.assertNotIn("MEMORYERROR", out,
+                         "the forged-size bomb exhausted memory under the cap")
+        self.assertIn("REFUSED", r.stdout,
+                      "the forged-size bomb was not refused")
 
     def test_a_genuinely_large_document_still_works(self):
         """The limit must refuse the absurd, not the merely big."""
