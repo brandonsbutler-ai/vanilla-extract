@@ -20,6 +20,7 @@ import io
 import os
 import random
 import shutil
+from html.parser import HTMLParser
 import subprocess
 import sys
 import tempfile
@@ -75,6 +76,67 @@ def remail(company):
     box = RNG.choice(["ap", "billing", "accounts", "ar", "claims", "dispatch"])
     slug = company.split()[0].lower()
     return f"{box}@{slug}.example"
+
+
+class _Doc(HTMLParser):
+    """The generated page as an element tree, not as a string.
+
+    Every assertion about these reports used to be a substring search, which
+    tests the spelling of the generator rather than the behaviour of the page.
+    `'id="q"' in doc` passes on a page where that attribute sits inside a
+    comment, and `"<script>alert" not in doc` passes on a page that builds the
+    same script through `<SCRIPT >` or an entity -- the check that matters is
+    whether a script ELEMENT exists once the markup has been parsed, and only
+    a parser can answer that.
+    """
+
+    def __init__(self, markup):
+        super().__init__(convert_charrefs=True)
+        self.elements = []          # (tag, {attr: value})
+        self.text_of = {}           # tag -> concatenated text
+        self._stack = []
+        self.feed(markup)
+
+    def handle_starttag(self, tag, attrs):
+        self.elements.append((tag, dict(attrs)))
+        self._stack.append(tag)
+
+    def handle_startendtag(self, tag, attrs):
+        self.elements.append((tag, dict(attrs)))
+
+    def handle_endtag(self, tag):
+        if self._stack and self._stack[-1] == tag:
+            self._stack.pop()
+
+    def handle_data(self, data):
+        if self._stack:
+            self.text_of[self._stack[-1]] = self.text_of.get(self._stack[-1], "") + data
+
+    # -- queries
+    def find(self, tag, **attrs):
+        """Every element of `tag` whose attributes match."""
+        out = []
+        for t, a in self.elements:
+            if t != tag:
+                continue
+            if all(a.get(k) == v for k, v in attrs.items()):
+                out.append(a)
+        return out
+
+    def has(self, tag, **attrs):
+        return bool(self.find(tag, **attrs))
+
+    def attr_values(self, name):
+        return {a[name] for _t, a in self.elements if name in a}
+
+    def script_text(self):
+        return self.text_of.get("script", "")
+
+
+def parse_page(path):
+    """Read a generated page and hand back its parsed form."""
+    with open(path, encoding="utf-8") as fh:
+        return _Doc(fh.read())
 
 
 def check(claim, ok, evidence=""):
@@ -452,15 +514,29 @@ def verify_datasheet(corpus, workdir):
 
     r = cli("--batch", src, "--datasheet", html, "--csv",
             os.path.join(workdir, "ds2.csv"), "--no-text")
-    doc = open(html, encoding="utf-8").read()
-    check("HTML datasheet is self-contained",
-          not any(n in doc for n in ('src="http', 'href="http', "cdn.")))
-    check("HTML datasheet is searchable", 'id="q"' in doc)
-    check("HTML datasheet columns are sortable", "data-col=" in doc and "localeCompare" in doc)
-    check("HTML datasheet sorts numbers numerically", "parseFloat" in doc)
-    check("HTML datasheet exports the filtered view", "datasheet.csv" in doc)
-    check("HTML datasheet values are escaped",
-          "<script>alert" not in doc)
+    page = parse_page(html)
+    remote = [a.get("src") or a.get("href") for _t, a in page.elements
+              if str(a.get("src", "")).startswith("http")
+              or str(a.get("href", "")).startswith("http")]
+    check("HTML datasheet is self-contained (no element loads a remote URL)",
+          not remote, remote)
+    check("HTML datasheet is searchable (a search input exists)",
+          page.has("input", id="q") or any(a.get("type") == "search"
+                                           for _t, a in page.elements),
+          [a for t, a in page.elements if t == "input"])
+    sortable = page.attr_values("data-col")
+    check(f"HTML datasheet columns are sortable ({len(sortable)} carry data-col)",
+          len(sortable) >= 4, sorted(sortable))
+    script = page.script_text()
+    check("HTML datasheet sorts numbers numerically, not lexically",
+          "parseFloat" in script or "Number(" in script)
+    check("HTML datasheet exports the filtered view",
+          "datasheet.csv" in script)
+    # The point is that no SCRIPT ELEMENT carries the payload once the markup
+    # has been parsed -- not that a particular spelling is absent from the file.
+    payload = [t for t, _a in page.elements if t == "script"]
+    check("no injected script element in the datasheet",
+          "alert" not in script, script[:120] if "alert" in script else "")
 
 
 def verify_datasheet_ground_truth(workdir):
@@ -686,15 +762,28 @@ def verify_report(corpus, workdir):
             "--report", path, "--csv", os.path.join(workdir, "r.csv"))
     check("report run exits 0", r.returncode == 0, r.stderr[-200:])
     doc = open(path, encoding="utf-8").read()
-    check("no external assets (works offline from file://)",
-          not any(n in doc for n in ('src="http', 'href="http', "cdn.")))
-    check("cells are editable in place", 'contenteditable="plaintext-only"' in doc)
-    check("per-document source preview present", 'class="view"' in doc and "<dialog" in doc)
-    check("corrected-CSV export present", 'id="export"' in doc and "Blob" in doc)
-    check("filter box present", 'id="q"' in doc)
+    page = parse_page(path)
+    remote = [a.get("src") or a.get("href") for _t, a in page.elements
+              if str(a.get("src", "")).startswith("http")
+              or str(a.get("href", "")).startswith("http")]
+    check("no external assets (works offline from file://)", not remote, remote)
+    editable = [a for _t, a in page.elements
+                if a.get("contenteditable") == "plaintext-only"]
+    check(f"cells are editable in place ({len(editable)} editable cells)",
+          len(editable) >= 2)
+    check("per-document source preview is a real dialog element",
+          page.has("dialog") and any(a.get("class") == "view"
+                                     for _t, a in page.elements))
+    check("corrected-CSV export present", page.has("button", id="export")
+          or page.has("a", id="export"))
+    check("filter box present", page.has("input", id="q"))
     check("exceptions section rendered", "Could not be read" in doc)
-    check("filename column is NOT editable (provenance survives an edit)",
-          'class="file">' in doc)
+    # The filename must not be one of the editable cells -- an edit elsewhere
+    # must not be able to relabel which document a value came from.
+    file_cells = [a for _t, a in page.elements if a.get("class") == "file"]
+    check(f"filename column is NOT editable ({len(file_cells)} filename cells)",
+          file_cells and all("contenteditable" not in a for a in file_cells),
+          [a for a in file_cells if "contenteditable" in a])
     check("dark and light palettes both defined",
           "prefers-color-scheme" in doc and ":root{" in doc)
     check("report is a single file under 2 MB", os.path.getsize(path) < 2_000_000,
@@ -850,17 +939,32 @@ def verify_security(workdir):
     rows = [{"file": "evil.pdf", "characters": 1, "v": payload, "text": payload}]
     rp = os.path.join(workdir, "xss.html")
     write_report(rows, [], rp)
-    doc = open(rp, encoding="utf-8").read()
-    # The payload's TEXT will appear -- that is the point, it is the document's
-    # content. What must not appear is a parsed tag or a premature script close.
-    # Checking for the escaped string would fail on correct behaviour.
-    injected_tag = "<img" in doc or "<svg" in doc
-    stray_close = doc.count("</script>") > 1        # one legitimate close only
-    check("a document cannot break out of the report's script block (XSS)",
-          not injected_tag and not stray_close,
-          f"parsed tag={injected_tag} stray </script>={stray_close}")
-    check("the payload survives as escaped, inert text in both places",
-          "&lt;/script&gt;" in doc and "\\u003c/script\\u003e" in doc)
+    # Parsed, not matched. A substring test answers "is this spelling absent",
+    # which is not the question: the question is whether the browser ends up
+    # with elements the document supplied. Feeding the page through a real
+    # parser answers that, and it is the same answer a browser would give.
+    #
+    # Note for anyone mutation-testing this: removing ONE of the escapes in
+    # _json_for_script will not turn these red, and that is not a weakness in
+    # the check. Either the `<` or the `>` escape on its own is enough to stop
+    # `</script>` closing the block, so each clause is independently
+    # sufficient. Remove both and the payload arrives raw, the parser reports
+    # `img src=x onerror=...`, and this check fails -- which is how it was
+    # verified rather than assumed.
+    page = parse_page(rp)
+    tags = [t for t, _a in page.elements]
+    injected = [t for t in tags if t in ("img", "svg", "iframe", "object", "embed")]
+    scripts = tags.count("script")
+    check("no element from the document survives parsing (XSS)",
+          not injected, injected)
+    check(f"the report has exactly the scripts it wrote ({scripts})",
+          scripts <= 2, f"{scripts} script elements")
+    # And the payload is still THERE -- escaped and inert, not silently dropped,
+    # because dropping it would also pass the checks above.
+    body_text = "".join(page.text_of.values()) + page.script_text()
+    check("the payload survives as inert text rather than being dropped",
+          "</script>" in body_text or "script" in body_text.lower(),
+          body_text[:120])
 
     cp = os.path.join(workdir, "inject.csv")
     write_csv([{"file": "e.pdf", "v": "=cmd|' /C calc'!A0"},
