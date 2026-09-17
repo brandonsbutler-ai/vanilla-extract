@@ -189,11 +189,18 @@ def _record(sheet, meta, characters, result):
 
 
 def run(paths, fields=None, include_text=True, max_text=None, auto_labels=None,
-        workspace=None, copy_originals=True, collect_metadata=False):
+        workspace=None, copy_originals=True, collect_metadata=False,
+        on_document=None):
     """Extract every document under `paths`.
 
     Returns (results, exceptions) as lists of dicts. Nothing raises: a failure
     on one document becomes a row in `exceptions` so the batch completes.
+
+    `on_document(label, ok)` is called after each document, if given. It exists
+    so a caller with a progress bar does not have to re-implement the walk --
+    which is the part that knows about archives, skipped extensions and member
+    names, and is exactly the part a second implementation would get wrong.
+    A callback that raises stops the run; nothing else does.
 
     `auto_labels` are labels discovered by recognize.infer_schema(); each
     becomes a column filled from the document's own label/value pairs.
@@ -208,95 +215,103 @@ def run(paths, fields=None, include_text=True, max_text=None, auto_labels=None,
     results, exceptions = [], []
 
     for label, source in _walk(paths):
-        if label.lower().endswith(_SKIP_EXT):
-            continue
+        # Whether this document produced a row or an exception, decided by
+        # what the body appended rather than by a flag each of the six exits
+        # would have to remember to set.
+        _failed_before = len(exceptions)
+        try:
+            if label.lower().endswith(_SKIP_EXT):
+                continue
 
-        meta = None
-        if collect_metadata or workspace is not None:
+            meta = None
+            if collect_metadata or workspace is not None:
+                try:
+                    if source is None:
+                        meta = fileinfo.stat_record(label)
+                    else:
+                        archive, info = source
+                        meta = fileinfo.zip_member_record(info, archive)
+                except OSError as exc:
+                    meta = {"path": label, "name": os.path.basename(label),
+                            "read_result": f"stat failed: {exc}"}
             try:
-                if source is None:
-                    meta = fileinfo.stat_record(label)
-                else:
-                    archive, info = source
-                    meta = fileinfo.zip_member_record(info, archive)
-            except OSError as exc:
-                meta = {"path": label, "name": os.path.basename(label),
-                        "read_result": f"stat failed: {exc}"}
-        try:
-            text, src_path, src_bytes = _load(label, source)
-        except EncryptedPDF as exc:
-            _record(datasheet, meta, None, "encrypted")
-            _archive_failure(workspace, label, meta, source, "encrypted")
-            exceptions.append({"file": label, "reason": "encrypted",
-                               "detail": str(exc)})
-            continue
-        except UndecodableText as exc:
-            _record(datasheet, meta, None, "undecodable_fonts")
-            _archive_failure(workspace, label, meta, source, "undecodable_fonts")
-            exceptions.append({"file": label, "reason": "undecodable_fonts",
-                               "detail": str(exc)})
-            continue
-        except UnsupportedFormat as exc:
-            _record(datasheet, meta, None, "unsupported_format")
-            _archive_failure(workspace, label, meta, source, "unsupported_format")
-            exceptions.append({"file": label, "reason": "unsupported_format",
-                               "detail": str(exc)})
-            continue
-        except ArchiveTooLarge as exc:
-            _record(datasheet, meta, None, "archive_bomb")
-            _archive_failure(workspace, label, meta, source, "archive_bomb")
-            exceptions.append({"file": label, "reason": "archive_bomb",
-                               "detail": str(exc)})
-            continue
-        except (OSError, zipfile.BadZipFile) as exc:
-            _record(datasheet, meta, None, "unreadable")
-            _archive_failure(workspace, label, meta, source, "unreadable")
-            exceptions.append({"file": label, "reason": "unreadable",
-                               "detail": f"{type(exc).__name__}: {exc}"})
-            continue
-        except Exception as exc:                      # noqa: BLE001
-            _record(datasheet, meta, None, "error")
-            _archive_failure(workspace, label, meta, source, "error")
-            exceptions.append({"file": label, "reason": "error",
-                               "detail": f"{type(exc).__name__}: {exc}"})
-            continue
+                text, src_path, src_bytes = _load(label, source)
+            except EncryptedPDF as exc:
+                _record(datasheet, meta, None, "encrypted")
+                _archive_failure(workspace, label, meta, source, "encrypted")
+                exceptions.append({"file": label, "reason": "encrypted",
+                                   "detail": str(exc)})
+                continue
+            except UndecodableText as exc:
+                _record(datasheet, meta, None, "undecodable_fonts")
+                _archive_failure(workspace, label, meta, source, "undecodable_fonts")
+                exceptions.append({"file": label, "reason": "undecodable_fonts",
+                                   "detail": str(exc)})
+                continue
+            except UnsupportedFormat as exc:
+                _record(datasheet, meta, None, "unsupported_format")
+                _archive_failure(workspace, label, meta, source, "unsupported_format")
+                exceptions.append({"file": label, "reason": "unsupported_format",
+                                   "detail": str(exc)})
+                continue
+            except ArchiveTooLarge as exc:
+                _record(datasheet, meta, None, "archive_bomb")
+                _archive_failure(workspace, label, meta, source, "archive_bomb")
+                exceptions.append({"file": label, "reason": "archive_bomb",
+                                   "detail": str(exc)})
+                continue
+            except (OSError, zipfile.BadZipFile) as exc:
+                _record(datasheet, meta, None, "unreadable")
+                _archive_failure(workspace, label, meta, source, "unreadable")
+                exceptions.append({"file": label, "reason": "unreadable",
+                                   "detail": f"{type(exc).__name__}: {exc}"})
+                continue
+            except Exception as exc:                      # noqa: BLE001
+                _record(datasheet, meta, None, "error")
+                _archive_failure(workspace, label, meta, source, "error")
+                exceptions.append({"file": label, "reason": "error",
+                                   "detail": f"{type(exc).__name__}: {exc}"})
+                continue
 
-        if not text.strip():
-            # Read fine, contained nothing. Almost always a scan with no text
-            # layer -- a caller needs to see this, not a blank row.
-            _record(datasheet, meta, 0, "no_text_found")
-            _archive_failure(workspace, label, meta, source, "no_text_found")
-            exceptions.append({"file": label, "reason": "no_text_found",
-                               "detail": "document read successfully but holds "
-                                         "no extractable text (often a scan "
-                                         "with no text layer)"})
-            continue
+            if not text.strip():
+                # Read fine, contained nothing. Almost always a scan with no text
+                # layer -- a caller needs to see this, not a blank row.
+                _record(datasheet, meta, 0, "no_text_found")
+                _archive_failure(workspace, label, meta, source, "no_text_found")
+                exceptions.append({"file": label, "reason": "no_text_found",
+                                   "detail": "document read successfully but holds "
+                                             "no extractable text (often a scan "
+                                             "with no text layer)"})
+                continue
 
-        if workspace is not None:
-            workspace.capture(label, text, source_path=src_path,
-                              source_bytes=src_bytes,
-                              copy_original=copy_originals,
-                              file_state=meta)
+            if workspace is not None:
+                workspace.capture(label, text, source_path=src_path,
+                                  source_bytes=src_bytes,
+                                  copy_original=copy_originals,
+                                  file_state=meta)
 
-        _record(datasheet, meta, len(text), "read")
-        row = {"file": label, "characters": len(text)}
-        try:
-            if auto_labels:
-                row.update(recognize.extract_fields(text, auto_labels))
-            for field in fields:
-                row[field.name] = field.find(text)
-        except Exception as exc:                  # noqa: BLE001
-            # A field pattern that misbehaves on one document must not cost the
-            # caller the other 399. The row is kept with blank fields and the
-            # failure is reported.
-            for name in list(auto_labels) + [f.name for f in fields]:
-                row.setdefault(name, "")
-            exceptions.append({"file": label, "reason": "field_extraction_failed",
-                               "detail": f"{type(exc).__name__}: {exc}"})
-        if include_text:
-            row["text"] = text[:max_text] if max_text else text
-        results.append(row)
+            _record(datasheet, meta, len(text), "read")
+            row = {"file": label, "characters": len(text)}
+            try:
+                if auto_labels:
+                    row.update(recognize.extract_fields(text, auto_labels))
+                for field in fields:
+                    row[field.name] = field.find(text)
+            except Exception as exc:                  # noqa: BLE001
+                # A field pattern that misbehaves on one document must not cost the
+                # caller the other 399. The row is kept with blank fields and the
+                # failure is reported.
+                for name in list(auto_labels) + [f.name for f in fields]:
+                    row.setdefault(name, "")
+                exceptions.append({"file": label, "reason": "field_extraction_failed",
+                                   "detail": f"{type(exc).__name__}: {exc}"})
+            if include_text:
+                row["text"] = text[:max_text] if max_text else text
+            results.append(row)
 
+        finally:
+            if on_document is not None:
+                on_document(label, len(exceptions) == _failed_before)
     if collect_metadata:
         return results, exceptions, datasheet
     return results, exceptions
