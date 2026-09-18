@@ -1351,6 +1351,24 @@ def verify_documentation(workdir):
             check(f"packaging/{entry} exposes a callable main",
                   callable(getattr(module, "main", None)),
                   sorted(n for n in vars(module) if not n.startswith("_"))[:6])
+        elif loaded:
+            # No toolkit here -- the [gui] extra is optional -- so the entry could
+            # not run. Check the same thing without it: find the module the entry
+            # takes main from, and import that; it does not need Qt. Skipping
+            # instead made the check count depend on whether PySide6 was
+            # installed, and the documented total failed wherever it was not.
+            import ast
+            import importlib
+            with open(path, encoding="utf-8") as fh:
+                tree = ast.parse(fh.read())
+            source = next((n.module for n in tree.body
+                           if isinstance(n, ast.ImportFrom)
+                           and any(a.name == "main" and a.asname is None
+                                   for a in n.names)), None)
+            target = importlib.import_module(source) if source else None
+            check(f"packaging/{entry} exposes a callable main",
+                  callable(getattr(target, "main", None)),
+                  f"no toolkit here; main comes from {source}")
 
     # Version agreement across the three places it appears.
     import tomllib
