@@ -12,6 +12,7 @@ import os
 import sys
 from html.parser import HTMLParser
 import shutil
+import tempfile
 import unittest
 import zipfile
 import zlib
@@ -274,6 +275,54 @@ class TestArchive(unittest.TestCase):
         # the image is skipped by extension, not reported as an error
         self.assertNotIn("c.png", texts)
 
+
+
+class TestCountMatchesTheWork(unittest.TestCase):
+    """The number shown before a run must be the number the run does.
+
+    Brandon watched a run reach "35,600 of 23,700 files". The pre-scan counted
+    an archive as ONE file while the walk expands it into every member inside,
+    so the denominator was smaller than the work. Measured on two real trees
+    before this was fixed: 2,210 counted against 3,919 processed, and 15,657
+    against 20,148.
+    """
+
+    def _tree(self):
+        import zipfile
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        with open(os.path.join(d, "loose.txt"), "w", encoding="utf-8") as fh:
+            fh.write("a loose document\n")
+        # an archive of real documents: the walk yields one unit PER MEMBER
+        with zipfile.ZipFile(os.path.join(d, "bundle.zip"), "w") as z:
+            for n in ("one.txt", "two.txt", "three.txt"):
+                z.writestr(n, "content of " + n)
+        # and an archive whose every member is skipped: it yields NOTHING
+        with zipfile.ZipFile(os.path.join(d, "compiled.zip"), "w") as z:
+            z.writestr("mod.pyc", "\x00binary")
+            z.writestr("lib.so", "\x00binary")
+        return d
+
+    def test_the_prescan_counts_exactly_what_the_walk_will_process(self):
+        from vanilla_extract import batch
+        from vanilla_extract.gui.session import Index
+        d = self._tree()
+        work = sum(1 for _ in batch._walk([d]))
+        self.assertEqual(Index(d).count, work,
+                         "the progress denominator disagrees with the work")
+
+    def test_an_archive_counts_as_its_members_not_as_one_file(self):
+        from vanilla_extract.gui.session import Index
+        d = self._tree()
+        # loose.txt + three members of bundle.zip = 4; compiled.zip yields none
+        self.assertEqual(Index(d).count, 4, Index(d).files)
+
+    def test_the_denominator_is_never_smaller_than_the_work(self):
+        """The 'past 100%' failure, stated as the invariant it violates."""
+        from vanilla_extract import batch
+        from vanilla_extract.gui.session import Index
+        d = self._tree()
+        self.assertGreaterEqual(Index(d).count, sum(1 for _ in batch._walk([d])))
 
 
 class TestBatch(unittest.TestCase):

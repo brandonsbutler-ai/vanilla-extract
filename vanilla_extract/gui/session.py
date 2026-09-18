@@ -140,11 +140,18 @@ def folder_from_drop(payload):
 
 
 class Index:
-    """What is in one or more folders, read without opening any document.
+    """What is in one or more folders, read without extracting any document.
 
-    Deliberately cheap: names, sizes and extensions only. The window shows this
-    the instant something is dropped, so the person can see the tool understood
-    what they gave it before committing to a run that may take a while.
+    It counts UNITS OF WORK, which is not the same as files on disk: an archive
+    becomes every member the run will read. That costs an archive open per zip
+    -- roughly 2.7 seconds on a 20,000-unit tree against 1.0 before -- and it
+    buys the only property that matters here, which is that the number the
+    window shows is the number the run does. The cheap version was faster and
+    wrong: it reported 15,657 for a tree the run then took 20,148 units to
+    finish, and the progress bar sailed past 100%.
+
+    No document is extracted. Archive central directories are read; contents
+    are not.
     """
 
     def __init__(self, folders):
@@ -167,23 +174,33 @@ class Index:
         return self.folders[0] if self.folders else None
 
     def _walk(self, folder):
+        # UNITS OF WORK, asked of the same walk the run uses. An archive is not
+        # one unit: batch expands it into every member it will read, so counting
+        # the container is how a progress bar reaches "35,600 of 23,700 files".
+        # Measured before this was fixed: 2,210 counted against 3,919 walked on
+        # one tree, 15,657 against 20,148 on another. Two rules that agree by
+        # luck are the same bug the shared SKIP_EXT already fixed once.
+        for label, _loader in batch._walk([folder]):
+            self.files.append(label)
+            member = label.split("!", 1)[-1]
+            ext = os.path.splitext(member)[1].lower()
+            self.by_extension[ext or "(none)"] = \
+                self.by_extension.get(ext or "(none)", 0) + 1
+
+        # A second, cheap pass for what the window SAYS about the folder: how
+        # many bytes are there, and how much of it is not a document. The walk
+        # cannot answer that -- it does not yield what it refuses.
         for root, dirs, names in os.walk(folder):
             dirs[:] = [d for d in dirs if not d.startswith(".")]
             for name in sorted(names):
                 path = os.path.join(root, name)
-                ext = os.path.splitext(name)[1].lower()
-                if ext in _SKIP:
+                if os.path.splitext(name)[1].lower() in _SKIP:
                     self.skipped.append(path)
                     continue
                 try:
-                    size = os.path.getsize(path)
+                    self.total_bytes += os.path.getsize(path)
                 except OSError:
                     self.skipped.append(path)
-                    continue
-                self.files.append(path)
-                self.total_bytes += size
-                self.by_extension[ext or "(none)"] = \
-                    self.by_extension.get(ext or "(none)", 0) + 1
 
     @property
     def count(self):
