@@ -14,12 +14,15 @@ URL, e-mailable, no server -- containing:
   * the exceptions table, given equal billing rather than a footnote;
   * a button that exports the corrected table back out as CSV.
 
-The edits live in the page. Nothing is sent anywhere -- there is nowhere to
-send it to -- so a client can review a delivery containing their own sensitive
+Edits are not written into the file -- a file:// page cannot write itself.
+They live in the browser (a copy in localStorage keyed to this report, where
+the browser allows it) until exported, and leaving with unexported edits asks
+first. Nothing is sent anywhere -- there is nowhere to send it to -- so a client can review a delivery containing their own sensitive
 documents without it leaving their machine.
 """
 
 import datetime
+import hashlib
 import html
 import json
 
@@ -80,16 +83,67 @@ dialog::backdrop{background:rgba(0,0,0,.5)}
 pre{margin:0;padding:16px;white-space:pre-wrap;overflow-wrap:anywhere;
       max-height:65vh;overflow:auto;font:12px/1.55 ui-monospace,Menlo,monospace}
 .empty{padding:16px;color:var(--mut)}
+.note{background:var(--warnbg);border:1px solid var(--line);border-radius:8px;
+      padding:10px 13px;margin-bottom:16px;font-size:13px}
 @media(max-width:640px){body{padding:16px 12px}.file{max-width:150px}}
 """
 
 _JS = """
 const DOCS = __DOCS__;
-document.querySelectorAll('td[contenteditable]').forEach(td=>{
-  const original = td.textContent;
-  td.addEventListener('input',()=>{
-    td.classList.toggle('edited', td.textContent !== original);
+// A file:// page cannot write itself, so corrections live in this browser
+// until they are exported. Two things keep them from vanishing silently: a
+// copy in localStorage, and a prompt before leaving with unexported edits.
+// The store is KEYED to this report. Chrome gives every file:// page the
+// same origin, so an unkeyed store would pour one delivery's corrections
+// into the next report opened. Storage may also throw outright (private
+// windows, locked-down profiles); the page must work without it.
+const STORE_KEY = 'vanilla-extract:review:__REPORT_ID__';
+function loadEdits(){
+  try{ return JSON.parse(localStorage.getItem(STORE_KEY) || 'null') || {cells:{}, exported:false}; }
+  catch(e){ return {cells:{}, exported:false}; }
+}
+function saveEdits(){
+  try{
+    if(Object.keys(EDITS.cells).length) localStorage.setItem(STORE_KEY, JSON.stringify(EDITS));
+    else localStorage.removeItem(STORE_KEY);
+  }catch(e){}
+}
+const EDITS = loadEdits();
+let unexported = Object.keys(EDITS.cells).length > 0 && !EDITS.exported;
+const COLS = [...document.querySelectorAll('#resultshead th')].map(th=>th.dataset.col);
+let restored = 0;
+document.querySelectorAll('#results tr').forEach((tr,r)=>{
+  [...tr.children].forEach((td,c)=>{
+    if(!td.hasAttribute('contenteditable')) return;
+    const original = td.textContent, key = r + '\t' + COLS[c];
+    if(key in EDITS.cells){
+      td.textContent = EDITS.cells[key];
+      td.classList.toggle('edited', td.textContent !== original);
+      restored++;
+    }
+    td.addEventListener('input',()=>{
+      td.classList.toggle('edited', td.textContent !== original);
+      if(td.textContent === original) delete EDITS.cells[key];
+      else EDITS.cells[key] = td.textContent;
+      EDITS.exported = false;
+      unexported = true;
+      saveEdits();
+    });
   });
+});
+if(restored){
+  const note = document.getElementById('restored');
+  note.firstChild.textContent = restored + ' correction' + (restored === 1 ? '' : 's') +
+    ' restored from this browser' + (EDITS.exported ? '.' : ', not yet exported.') + ' ';
+  note.hidden = false;
+  document.getElementById('discard').addEventListener('click',()=>{
+    EDITS.cells = {}; unexported = false; saveEdits(); location.reload();
+  });
+}
+window.addEventListener('beforeunload', e=>{
+  if(!unexported) return;
+  e.preventDefault();
+  e.returnValue = '';
 });
 const search = document.getElementById('q');
 if(search){
@@ -140,6 +194,9 @@ document.getElementById('export')?.addEventListener('click',()=>{
   a.download='corrected.csv';
   a.click();
   URL.revokeObjectURL(a.href);
+  EDITS.exported = true;
+  unexported = false;
+  saveEdits();
 });
 """
 
@@ -228,6 +285,12 @@ def write_report(results, exceptions, path, columns=None, title="Extraction repo
     total = len(results) + len(exceptions)
     rate = f"{100 * len(results) / total:.0f}%" if total else "--"
     stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    # What the browser keys saved corrections to: this report's cells and the
+    # moment it was generated, so a different report -- even one written over
+    # the same file name -- never inherits them.
+    report_id = hashlib.sha256(json.dumps(
+        [stamp, columns, [[str(r.get(c, "")) for c in columns] for r in results]]
+    ).encode("utf-8")).hexdigest()[:24]
 
     exc_section = (
         f'<h2>Could not be read <span class="count">({len(exceptions)})</span></h2>'
@@ -242,7 +305,8 @@ def write_report(results, exceptions, path, columns=None, title="Extraction repo
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>{_esc(title)}</title><style>{_CSS}</style></head><body><div class="wrap">
 <h1>{_esc(title)}</h1>
-<div class="sub">Generated {stamp} by vanilla-extract. Edits stay in this file; nothing is uploaded.</div>
+<div class="sub">Generated {stamp} by vanilla-extract. Edits are not saved into this file: they live in this browser until you export them. Nothing is uploaded.</div>
+<div class="note" id="restored" hidden><span></span><button id="discard">Discard them</button></div>
 <div class="stats">
   <div class="stat"><b>{len(results)}</b><span>documents read</span></div>
   <div class="stat"><b>{len(exceptions)}</b><span>could not be read</span></div>
@@ -260,7 +324,7 @@ def write_report(results, exceptions, path, columns=None, title="Extraction repo
 {exc_section}
 <dialog id="preview"><div class="dlghead"><strong id="dlgfile"></strong>
 <button id="dlgclose">Close</button></div><pre id="dlgtext"></pre></dialog>
-</div><script>{_JS.replace("__DOCS__", _json_for_script(docs))}</script></body></html>"""
+</div><script>{_JS.replace("__REPORT_ID__", report_id).replace("__DOCS__", _json_for_script(docs))}</script></body></html>"""
 
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(doc)
@@ -332,8 +396,6 @@ th[data-dir=down]::after{content:" \\2193"}
 td.num{text-align:right;font-variant-numeric:tabular-nums}
 td.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
 .flag{color:var(--warn);font-weight:600}
-.note{background:var(--warnbg);border:1px solid var(--line);border-radius:8px;
-      padding:10px 13px;margin-bottom:16px;font-size:13px}
 """
 
 _NUMERIC = {"size_bytes", "compressed_bytes", "compression_ratio", "hard_links",

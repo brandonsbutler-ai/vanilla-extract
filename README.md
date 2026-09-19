@@ -54,6 +54,11 @@ it came from, the exceptions table given equal billing, and a button that export
 table back out as CSV. No server, no external assets, nothing uploaded -- so a client can review a
 delivery of their own sensitive documents without it leaving their machine.
 
+**Export is the save.** A page opened from disk cannot write itself, so corrections are not stored
+in the HTML file. They live in the browser until exported: where the browser allows it, a copy is
+kept in its local storage, keyed to that one report so another report never inherits it, and
+reloading or closing the tab with unexported corrections asks first.
+
 One row per document, one column per field, and **a second table naming every file that could not
 be read and why**. That second table is the point: encrypted PDFs, scans with no
 text layer, and files whose fonts carry no character map all look like empty documents to most
@@ -408,7 +413,7 @@ Every option the command accepts. `--help` prints the same list.
 Two layers, both runnable:
 
 ```bash
-python3 -m unittest discover -s tests -v     # 122 unit tests
+python3 -m unittest discover -s tests -v     # 129 unit tests
 python3 verify_e2e.py                        # 183 end-to-end claim checks
 ```
 
@@ -428,12 +433,16 @@ figures here are whatever it last measured, not what would read best.
 python3 -m unittest discover -s tests -v
 ```
 
-122 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
+129 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
 there is nothing opaque in the repo. The suite covers the cases that actually break extractors:
 balanced parens inside PDF strings, escaped close-parens, octal escapes, odd hex nibbles,
 RTF `\fonttbl` contents leaking into output, cp1252 fallback, and misnamed files -- plus the
 batch guarantees: one bad document never aborts the run, an empty document is reported rather
 than returned as a blank row, and every requested field column exists on every row.
+
+The review page's behaviour on reload, close and export is checked in a real headless Chromium
+through Playwright, a development tool only. Where Playwright is not installed those tests report
+as skipped rather than disappearing, so the count above is the same on every machine.
 
 ## License
 

@@ -1641,7 +1641,9 @@ class TestPostRenameReviewRegressions(unittest.TestCase):
         self.assertIn('id="resultshead"', doc)
         self.assertIn('data-col="file"', doc)
         # the export must gather the header, not just the tbody
-        export_js = doc.split("export")[1][:500]
+        # (located by the handler, not the first "export" in the page -- the
+        # header now tells the reader to export, which is prose, not script)
+        export_js = doc.split("getElementById('export')")[1][:500]
         self.assertIn("resultshead", export_js)
 
     def test_workspace_keeps_the_original_of_an_unreadable_document(self):
@@ -1708,6 +1710,161 @@ class TestPostRenameReviewRegressions(unittest.TestCase):
         """#10 -- one subprocess per file dominated a large scan."""
         from vanilla_extract import fileinfo
         self.assertTrue(hasattr(fileinfo, "_BIRTHTIME_SUPPORT"))
+
+
+def _chromium():
+    """A headless Chromium through Playwright, or None where it is not installed.
+
+    The report is a page, and what it does on reload, close and export is only
+    answered by a browser. Playwright is a development tool, never a runtime
+    dependency; without it these tests skip rather than vanish, so the count
+    the documentation quotes is the same on every machine.
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return None, None
+    try:
+        pw = sync_playwright().start()
+        return pw, pw.chromium.launch()
+    except Exception:                     # noqa: BLE001 - no browser binary
+        return None, None
+
+
+class TestReviewPageInABrowser(unittest.TestCase):
+    """review.html in a real browser: corrections must not vanish silently.
+
+    The page said "Edits stay in this file" while a reload or a closed tab threw
+    every correction away without a word -- a file:// page cannot write itself.
+    """
+
+    ROWS = [{"file": "/data/a.pdf", "characters": 12, "total": "$5.00", "text": "Total: $5.00"},
+            {"file": "/data/b.pdf", "characters": 12, "total": "$7.00", "text": "Total: $7.00"}]
+
+    @classmethod
+    def setUpClass(cls):
+        cls.pw, cls.browser = _chromium()
+
+    @classmethod
+    def tearDownClass(cls):
+        if cls.browser:
+            cls.browser.close()
+            cls.pw.stop()
+
+    def setUp(self):
+        if not self.browser:
+            self.skipTest("Playwright with Chromium is not installed")
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        self.ctx = self.browser.new_context(accept_downloads=True)
+        self.addCleanup(self.ctx.close)
+
+    def _report(self, rows=None, name="review.html"):
+        from vanilla_extract.report import write_report
+        path = os.path.join(self.dir, name)
+        write_report(rows or self.ROWS, [], path,
+                     columns=["file", "characters", "total"])
+        return "file://" + path
+
+    def _edit(self, page, value, row=0):
+        cell = page.locator("#results tr").nth(row).locator("td[contenteditable]").first
+        cell.click()
+        page.keyboard.press("Control+A")
+        page.keyboard.type(value)
+        return cell
+
+    def _export(self, page):
+        import csv as _csv
+        with page.expect_download() as dl:
+            page.click("#export")
+        with open(dl.value.path(), encoding="utf-8") as fh:
+            return list(_csv.DictReader(fh))
+
+    def test_the_header_does_not_claim_edits_are_saved_in_the_file(self):
+        from vanilla_extract.report import write_report
+        path = os.path.join(self.dir, "r.html")
+        write_report(self.ROWS, [], path)
+        text = page_of(path).text
+        self.assertNotIn("Edits stay in this file", text)
+        self.assertIn("until you export", text)
+
+    def test_leaving_with_unexported_edits_asks_first(self):
+        page = self.ctx.new_page()
+        page.goto(self._report())
+        self._edit(page, "$9.99")
+        seen = []
+        page.on("dialog", lambda d: (seen.append(d.type), d.dismiss()))
+        try:
+            page.reload(timeout=3000)
+        except Exception:                 # noqa: BLE001 - dismissed = stays put
+            pass
+        self.assertEqual(seen, ["beforeunload"])
+
+    def test_no_prompt_once_the_edits_are_exported(self):
+        page = self.ctx.new_page()
+        page.goto(self._report())
+        self._edit(page, "$9.99")
+        self._export(page)
+        seen = []
+        page.on("dialog", lambda d: (seen.append(d.type), d.accept()))
+        page.reload()
+        self.assertEqual(seen, [])
+
+    def test_edits_survive_a_reload(self):
+        page = self.ctx.new_page()
+        page.goto(self._report())
+        self._edit(page, "$9.99")
+        page.on("dialog", lambda d: d.accept())
+        page.reload()
+        cell = page.locator("#results tr").first.locator("td[contenteditable]").first
+        self.assertEqual(cell.inner_text().strip(), "$9.99")
+        self.assertIn("edited", cell.get_attribute("class") or "")
+
+    def test_export_carries_exactly_the_one_changed_cell(self):
+        page = self.ctx.new_page()
+        page.goto(self._report())
+        self._edit(page, "$9.99", row=1)
+        rows = self._export(page)
+        changed = [(r["file"], k) for r, orig in zip(rows, self.ROWS)
+                   for k in ("file", "characters", "total")
+                   if r[k] != str(orig[k])]
+        self.assertEqual(changed, [("/data/b.pdf", "total")])
+        self.assertEqual(rows[1]["total"], "$9.99")
+
+    def test_another_report_at_the_same_path_does_not_inherit_the_edits(self):
+        """Every file:// page shares one origin, so the store must be keyed."""
+        page = self.ctx.new_page()
+        url = self._report()
+        page.goto(url)
+        self._edit(page, "$9.99")
+        page.on("dialog", lambda d: d.accept())
+        other = [dict(r, total="$1.00") for r in self.ROWS]
+        self._report(rows=other)          # same file name, different report
+        page.reload()
+        cell = page.locator("#results tr").first.locator("td[contenteditable]").first
+        self.assertEqual(cell.inner_text().strip(), "$1.00")
+
+    def test_the_page_works_when_storage_throws(self):
+        """Private windows and locked-down browsers refuse localStorage."""
+        self.ctx.add_init_script(
+            "Object.defineProperty(window, 'localStorage', "
+            "{get(){ throw new DOMException('denied', 'SecurityError'); }});")
+        page = self.ctx.new_page()
+        errors = []
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        page.goto(self._report())
+        self._edit(page, "$9.99")
+        rows = self._export(page)
+        self.assertEqual(rows[0]["total"], "$9.99")
+        self.assertEqual(errors, [])
+        self._edit(page, "$8.88")
+        seen = []
+        page.on("dialog", lambda d: (seen.append(d.type), d.dismiss()))
+        try:
+            page.reload(timeout=3000)
+        except Exception:                 # noqa: BLE001
+            pass
+        self.assertEqual(seen, ["beforeunload"])
 
 
 if __name__ == "__main__":

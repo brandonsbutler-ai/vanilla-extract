@@ -75,7 +75,9 @@ contact           4 docs (100%)  email       e.g. claims@ridgeway.example
 `--report review.html` writes a single HTML file -- no server, no external assets, nothing
 uploaded. Every value is editable in place, each document's source text is one click away so a
 suspect value can be checked against the page it came from, the exceptions table is shown
-alongside rather than buried, and a button exports the corrected table as CSV.
+alongside rather than buried, and a button exports the corrected table as CSV. Exporting is the
+save: corrections are not written into the HTML file, they live in the browser until exported, and
+leaving the page with unexported corrections asks first.
 
 Because nothing leaves the machine, a review of your own confidential documents stays on your
 machine.
@@ -357,7 +359,7 @@ Every one of those is now a named regression test.
 git clone https://github.com/brandonsbutler-ai/vanilla-extract
 cd vanilla_extract
 
-python3 -m unittest discover -s tests -v    # 122 unit tests
+python3 -m unittest discover -s tests -v    # 129 unit tests
 python3 verify_e2e.py                       # 183 end-to-end claim checks
 python3 benchmark.py /path/to/your/pdfs     # quality against pdftotext
 ```
