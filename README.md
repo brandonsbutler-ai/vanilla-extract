@@ -71,10 +71,14 @@ because a pattern that fires on the wrong thing costs more than one that stays q
 Label-on-its-own-line is the ambiguous form: `Customer` above `Contoso Ltd` is two short
 capitalised lines, and one document cannot say which is the label. The corpus can. A label that
 other documents state plainly (`Customer: Fabrikam Inc`) is read above a value that looks like a
-label; a line that merely recurs, as headings do, is not treated as one. On the synthetic invoice
-corpus in the validation run, that took recall on stacked layouts from 0.58 to 1.00 per field
-(0.795 to 1.000 overall) with precision unchanged at 1.000, and it proposed no new columns on
-three real deliveries of technical documents.
+label; a line that merely recurs, as headings do, is not treated as one. Measured on the synthetic
+invoice corpus built for an end-to-end review (60 files, 312 planted values), by that review's own
+scorer (`score.py`): recall on the three stacked-layout fields went from 0.577 to 1.000, and overall
+recall from 0.788 to 1.000. The same scorer puts precision at 0.992 before and 0.969 after -- the
+difference is ten values read from a zip nested inside a zip, which is now opened and was not
+before, and for which the scorer has no planted truth. Every one of the ten is the value its
+document states; scored against those documents too, precision is 1.000. On three real
+deliveries of technical documents the change proposed no new columns.
 
 Two kinds of line are never proposed as columns. A label whose value is the same in nine of ten
 documents carrying it (once at least five do) is boilerplate -- a page footer such as
