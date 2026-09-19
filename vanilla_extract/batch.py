@@ -473,17 +473,47 @@ def csv_safe(value):
     return text
 
 
+# Excel's documented maximum characters in one cell. A document's full text
+# can be millions of characters -- 21.6 million from one JSON scan file -- and
+# such a cell is cut off by Excel and refused outright by Python's own csv
+# reader at its default 131,072-character field limit. So no CSV cell this
+# writes is longer: a longer value is cut, the cut is marked in the cell, and
+# a `text_truncated` column says which rows lost text. The full text stays in
+# the document itself and, with --workspace, in extracted/.
+CSV_CELL_LIMIT = 32767
+
+
+def _fit_cell(text):
+    """(value, truncated) with len(value) <= CSV_CELL_LIMIT."""
+    if len(text) <= CSV_CELL_LIMIT:
+        return text, False
+    note = f" [... truncated: {len(text):,} characters in full]"
+    return text[:CSV_CELL_LIMIT - len(note)] + note, True
+
+
 def write_csv(rows, path, columns=None):
-    """Write rows to CSV. Returns the number of data rows written."""
+    """Write rows to CSV. Returns the number of data rows written.
+
+    No cell exceeds CSV_CELL_LIMIT. When a `text` column is written, a
+    `text_truncated` column follows it (True/False), so a cut is never silent.
+    """
+    columns = list(columns or (rows[0].keys() if rows else ["file"]))
+    if "text" in columns and "text_truncated" not in columns:
+        columns.insert(columns.index("text") + 1, "text_truncated")
     if not rows:
-        columns = columns or ["file"]
         with open(path, "w", newline="", encoding="utf-8") as fh:
             csv.DictWriter(fh, fieldnames=columns).writeheader()
         return 0
-    columns = columns or list(rows[0].keys())
     with open(path, "w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=columns, extrasaction="ignore")
         writer.writeheader()
         for row in rows:
-            writer.writerow({k: csv_safe(v) for k, v in row.items()})
+            out = {}
+            for k, v in row.items():
+                out[k], cut = _fit_cell(csv_safe(v))
+                if k == "text":
+                    out["text_truncated"] = cut
+            if "text_truncated" in columns and "text" not in row:
+                out["text_truncated"] = False
+            writer.writerow(out)
     return len(rows)

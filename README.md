@@ -29,6 +29,13 @@ Quote each `--field` in **single** quotes. Inside double quotes bash rewrites `\
 pattern arrives, and the regex no longer means what was typed. A pattern that will not compile is
 refused with the field's name and the pattern exactly as received, and exit status 2.
 
+**No CSV cell is longer than 32,767 characters**, which is as much as Excel holds in one cell. A
+document's full text can run to millions of characters, and a cell that long is cut off by Excel
+and refused by Python's own `csv` reader at its default settings. A longer value is cut, the cell
+ends with `[... truncated: N characters in full]`, and a `text_truncated` column (True/False) follows
+`text` so no cut is silent. The `characters` column always counts the full text; the full text
+itself is in the document, and with `--workspace` in `extracted/`. `--no-text` leaves the column out.
+
 **Or let it find the fields itself**, which is the point when the client has 400 documents and no
 idea what regex to write:
 
@@ -436,7 +443,7 @@ Every option the command accepts. `--help` prints the same list.
 Two layers, both runnable:
 
 ```bash
-python3 -m unittest discover -s tests -v     # 147 unit tests
+python3 -m unittest discover -s tests -v     # 148 unit tests
 python3 verify_e2e.py                        # 186 end-to-end claim checks
 ```
 
@@ -456,7 +463,7 @@ figures here are whatever it last measured, not what would read best.
 python3 -m unittest discover -s tests -v
 ```
 
-147 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
+148 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
 there is nothing opaque in the repo. The suite covers the cases that actually break extractors:
 balanced parens inside PDF strings, escaped close-parens, octal escapes, odd hex nibbles,
 RTF `\fonttbl` contents leaking into output, cp1252 fallback, and misnamed files -- plus the

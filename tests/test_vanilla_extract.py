@@ -1314,6 +1314,27 @@ class TestReviewRegressions(unittest.TestCase):
             values = [r["v"] for r in _csv.DictReader(open(path, encoding="utf-8"))]
         self.assertTrue(all(v.startswith("'") for v in values))
 
+    def test_no_csv_cell_exceeds_what_a_spreadsheet_holds(self):
+        """A 21.6-million-character text cell: Excel stops at 32,767 characters
+        per cell, and Python's own csv reader refused the file at its default
+        131,072-character field limit."""
+        import csv as _csv
+        from vanilla_extract.batch import write_csv
+        big = "word " * 20000                                   # 100,000 chars
+        rows = [{"file": "big.json", "characters": len(big), "text": big},
+                {"file": "small.txt", "characters": 5, "text": "hello"}]
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        path = os.path.join(d, "o.csv")
+        write_csv(rows, path, ["file", "characters", "text"])
+        with open(path, encoding="utf-8", newline="") as fh:
+            got = list(_csv.DictReader(fh))              # default field limit
+        self.assertLessEqual(max(len(v) for r in got for v in r.values()), 32767)
+        self.assertEqual([r["text_truncated"] for r in got], ["True", "False"])
+        self.assertIn("truncated", got[0]["text"][-60:])
+        self.assertTrue(big.startswith(got[0]["text"][:30000]))
+        self.assertEqual(got[1]["text"], "hello")
+
     def test_negative_money_and_percent_stay_numbers(self):
         """The guard prefixed every cell starting '-', so -$251.00 and -4.5%
         reached Excel as text: a column that will not sum."""
