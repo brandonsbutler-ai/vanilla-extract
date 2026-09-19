@@ -35,6 +35,10 @@ PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayIcon={app}\{#AppExeName}
+; The [Registry] entry below edits the user's PATH. Without this, running
+; Command Prompt and Explorer windows are not told, and the change -- the add on
+; install, the removal on uninstall -- only shows up after the next sign-in.
+ChangesEnvironment=yes
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -70,4 +74,31 @@ begin
   end;
   { Avoid appending a second copy on reinstall. }
   Result := Pos(';' + Uppercase(Param) + ';', ';' + Uppercase(OrigPath) + ';') = 0;
+end;
+
+{ The [Registry] entry adds the install folder to the user's PATH but nothing
+  removed it: an uninstall left a PATH entry pointing at a folder that no
+  longer exists. Take exactly that entry back out, whatever its position, and
+  leave the rest of the user's PATH as it was. }
+procedure RemovePath(Dir: string);
+var
+  Path: string;
+  P: Integer;
+begin
+  if not RegQueryStringValue(HKEY_CURRENT_USER, 'Environment', 'Path', Path) then
+    exit;
+  { Separators on both ends, so the first and last entries match like any other. }
+  Path := ';' + Path + ';';
+  P := Pos(';' + Uppercase(Dir) + ';', Uppercase(Path));
+  if P = 0 then
+    exit;
+  Delete(Path, P, Length(Dir) + 1);
+  Path := Copy(Path, 2, Length(Path) - 2);
+  RegWriteExpandStringValue(HKEY_CURRENT_USER, 'Environment', 'Path', Path);
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usPostUninstall then
+    RemovePath(ExpandConstant('{app}'));
 end;

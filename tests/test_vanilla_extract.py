@@ -1929,6 +1929,27 @@ class TestPostRenameReviewRegressions(unittest.TestCase):
         self.assertIn(f"$BINDIR/{command}", install)
         self.assertIn(f'AppExeName "{command}.exe"', iss)
 
+    def test_the_windows_installer_takes_its_path_entry_back_out(self):
+        """The installer appended {app} to the user's PATH and the uninstaller
+        left it there, with no ChangesEnvironment to tell Explorer either way.
+        Inno Setup cannot run here, so this reads the script's sections; the
+        compiled behaviour is unverified on this machine."""
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        iss = open(os.path.join(root, "packaging", "vanilla-extract.iss"),
+                   encoding="utf-8").read()
+        sections, current = {}, None
+        for line in iss.splitlines():
+            if line.startswith("[") and line.rstrip().endswith("]"):
+                current = line.strip()[1:-1]
+                sections[current] = []
+            elif current:
+                sections[current].append(line.strip())
+        self.assertIn("ChangesEnvironment=yes", sections["Setup"])
+        code = "\n".join(sections["Code"])
+        self.assertIn("procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);", code)
+        self.assertIn("usPostUninstall", code)
+        self.assertIn("RegWriteExpandStringValue(HKEY_CURRENT_USER, 'Environment', 'Path'", code)
+
     def test_birthtime_support_is_cached_per_filesystem(self):
         """#10 -- one subprocess per file dominated a large scan."""
         from vanilla_extract import fileinfo
