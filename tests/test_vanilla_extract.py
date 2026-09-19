@@ -2176,6 +2176,19 @@ class TestEveryInputIsAccountedFor(unittest.TestCase):
         self.assertEqual([e["reason"] for e in exceptions], ["limit_exceeded"])
         self.assertLess(time.thread_time() - start, 60)
 
+        # Nothing but nested EMPTY zips, 16 per level: no leaf to count, so a
+        # budget counting only leaves never filled -- 28 KB at depth 6 ran 286 s.
+        # Every member entry counts, the zips included.
+        empty = _zip_bytes({})
+        for level in range(4):                     # 69,904 entries in 15 KB
+            empty = _zip_bytes({f"e{level}_{i}.zip": empty for i in range(16)})
+        d = self._one("empties.zip", empty)
+        start = time.thread_time()
+        results, exceptions = run([d], include_text=False)
+        self.assertEqual(results, [])
+        self.assertEqual([e["reason"] for e in exceptions], ["limit_exceeded"])
+        self.assertLess(time.thread_time() - start, 30)
+
     def test_an_archive_is_opened_once_not_once_per_member(self):
         """Re-opening the ZipFile for every member parses the whole central
         directory each time: 8,000 members took 197 s."""

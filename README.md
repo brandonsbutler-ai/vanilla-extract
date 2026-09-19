@@ -127,9 +127,9 @@ is checked by its bytes first, so a PDF renamed `.jpg` is read; a real image is 
 since a link can loop back up the tree, and is listed as `symlink_not_followed`; a folder that
 cannot be listed is `unreadable_directory`. A zip inside a zip is opened, up to
 eight levels deep; past that it is listed as `limit_exceeded`. One archive on disk may stand for at
-most 20,000 documents and 1 GB of declared content across all its levels -- 16 copies nested five
-deep is a million documents in 23 KB -- and past either figure the rest of it is one
-`limit_exceeded` row.
+most 20,000 member entries -- nested archives count, not only the documents in them -- and 1 GB of
+declared content across all its levels (16 copies nested five deep is a million documents in
+23 KB), and past either figure the rest of it is one `limit_exceeded` row.
 
 Every reason a file can carry, in the exceptions table, on stderr and in `--json`:
 

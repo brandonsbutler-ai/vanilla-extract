@@ -262,6 +262,10 @@ def _walk(paths, recurse_archives=True):
                                       f"archive nested more than {MAX_ARCHIVE_DEPTH} "
                                       f"deep; not opened", member=member)
                 else:
+                    # A nested zip is a member entry too. Counting only leaves
+                    # let an archive of nothing but nested empty zips open
+                    # every one of them: 28 KB at depth 6 ran for 286 s.
+                    spent["members"] += 1
                     yield from _archive(data, label, top, depth + 1, spent)
 
     def _file(full):
