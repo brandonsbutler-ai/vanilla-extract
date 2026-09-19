@@ -650,6 +650,28 @@ class TestReport(unittest.TestCase):
         self.assertIn("alert(1)", page.text,
                       "the value was dropped rather than escaped")
 
+    def test_a_huge_document_does_not_make_a_huge_page(self):
+        """One 21.6-million-character JSON file made a 155 MB report that took
+        ten seconds to open. The source view is a preview, bounded per
+        document, and it says how much it left out and where the rest is."""
+        import json
+        import re as _re
+        from vanilla_extract.report import PREVIEW_LIMIT, write_report
+        big = "x" * (PREVIEW_LIMIT * 5)
+        rows = [{"file": "/data/scan.json", "characters": len(big), "text": big},
+                {"file": "/data/small.txt", "characters": 5, "text": "hello"}]
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        path = os.path.join(d, "r.html")
+        write_report(rows, [], path)
+        self.assertLess(os.path.getsize(path), PREVIEW_LIMIT * 2)
+        script = page_of(path).script_text
+        docs = json.loads(_re.search(r"const DOCS = (.*?);\n", script).group(1))
+        self.assertLessEqual(len(docs[0]["text"]), PREVIEW_LIMIT + 400)
+        self.assertIn(f"{len(big) - PREVIEW_LIMIT:,} more characters", docs[0]["text"])
+        self.assertIn("/data/scan.json", docs[0]["text"])
+        self.assertEqual(docs[1]["text"], "hello")
+
     def test_file_column_is_not_editable(self):
         """The filename identifies the row; editing it would break provenance."""
         page = Page(self._render())

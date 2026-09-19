@@ -203,6 +203,25 @@ document.getElementById('export')?.addEventListener('click',()=>{
 """
 
 
+# How much of one document's text the source view embeds. The view exists to
+# check a value against the page it came from, and 100,000 characters is some
+# forty pages of prose. Embedding everything made one 21.6-million-character
+# JSON file into a 155 MB report that took ten seconds or more to open, so a
+# longer text is cut here and the cut says how much was left out and where the
+# whole of it is.
+PREVIEW_LIMIT = 100_000
+
+
+def _preview(label, text):
+    text = text or ""
+    if len(text) <= PREVIEW_LIMIT:
+        return text
+    return (text[:PREVIEW_LIMIT] +
+            f"\n\n[... preview truncated: {len(text) - PREVIEW_LIMIT:,} more characters "
+            f"not shown. The full text is in {label} (`vanilla` on that file prints "
+            f"it) and, for a run with --workspace, in its extracted/ folder.]")
+
+
 def _esc(value):
     return html.escape("" if value is None else str(value))
 
@@ -237,7 +256,8 @@ def write_report(results, exceptions, path, columns=None, title="Extraction repo
                    if c != "text"]
 
     docs = [{"file": r.get("file", ""),
-             "text": (r.get("text", "") if include_text else "")}
+             "text": (_preview(r.get("file", ""), r.get("text", ""))
+                      if include_text else "")}
             for r in results]
 
     head = "".join(f'<th data-col="{_esc(c)}">{_esc(c)}</th>' for c in columns)
