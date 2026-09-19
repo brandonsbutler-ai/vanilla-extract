@@ -24,6 +24,7 @@ import zipfile
 
 from . import UnsupportedFormat, extract, extract_file
 from . import fileinfo, recognize
+from .dispatch import zip_holds_document
 from .limits import ArchiveTooLarge, Budget, read_member
 
 # One decompression budget per archive, so the 1 GB whole-archive cap that
@@ -138,7 +139,6 @@ def _walk(paths, recurse_archives=True):
             suffix = f"#{dup + 1}" if dup else ""
             yield f"{full}!{info.filename}{suffix}", (full, info)
 
-    _ARCHIVE_DOC = (".docx", ".pptx", ".xlsx", ".odt")
     for path in paths:
         if os.path.isdir(path):
             for root, dirs, files in os.walk(path):
@@ -152,13 +152,15 @@ def _walk(paths, recurse_archives=True):
                     # bundle.zip inside a scanned folder produced no result row
                     # AND no exception row -- it simply disappeared, which is
                     # the one thing this module promises never to do.
+                    # Content decides, not the name: a DOCX saved as .pdf is
+                    # a document, a plain archive saved as .docx is an archive.
                     if (recurse_archives and zipfile.is_zipfile(full)
-                            and not full.lower().endswith(_ARCHIVE_DOC)):
+                            and not zip_holds_document(full)):
                         yield from _archive(full)
                     else:
                         yield full, None
-        elif zipfile.is_zipfile(path) and recurse_archives and not path.lower().endswith(
-                _ARCHIVE_DOC):
+        elif (zipfile.is_zipfile(path) and recurse_archives
+                and not zip_holds_document(path)):
             # is_zipfile only validates the end-of-central-directory record, so a
             # damaged central directory passes it and raises inside _archive --
             # which yields (path, None) rather than killing the batch, the one

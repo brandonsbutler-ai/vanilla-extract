@@ -68,6 +68,22 @@ def _sniff_zip(data):
     return None
 
 
+def zip_holds_document(source):
+    """True when a zip -- a path or its bytes -- is an office document.
+
+    Decided by what is INSIDE the container, never by its name, so a DOCX saved
+    as .pdf is read as one document rather than walked as an archive of XML
+    parts, and a plain archive saved as .docx is opened as the archive it is.
+    """
+    try:
+        target = io.BytesIO(source) if isinstance(source, (bytes, bytearray)) else source
+        with zipfile.ZipFile(target) as zf:
+            names = set(zf.namelist())
+    except (zipfile.BadZipFile, OSError):
+        return False
+    return any(marker in names for marker, _handler in _ZIP_MARKERS)
+
+
 def _looks_like_email(head):
     """An RFC 822 message starts with headers; check for the common ones."""
     first = head[:2048].lower()

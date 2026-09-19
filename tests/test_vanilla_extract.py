@@ -449,6 +449,36 @@ class TestBatch(unittest.TestCase):
         self.assertIn(pattern, err.getvalue())
         self.assertIn("nothing to repeat", err.getvalue())
 
+    def test_a_docx_named_pdf_is_one_document_not_an_archive(self):
+        """The walk used to decide "archive" from the extension before the
+        content sniff could see word/document.xml: a DOCX saved as .pdf came
+        back as three junk rows and seven exceptions for its XML parts."""
+        import tempfile
+        from vanilla_extract.batch import run
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "really_a_docx.pdf"), "wb") as fh:
+                fh.write(make_docx(["Invoice Number: INV-77"]))
+            results, exceptions = run([d])
+        self.assertEqual([os.path.basename(r["file"]) for r in results],
+                         ["really_a_docx.pdf"])
+        self.assertIn("INV-77", results[0]["text"])
+        self.assertEqual(exceptions, [])
+
+    def test_a_docx_named_pdf_reads_as_a_document_on_the_command_line(self):
+        import contextlib
+        import tempfile
+        from vanilla_extract.__main__ import main
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "really_a_docx.pdf")
+            with open(path, "wb") as fh:
+                fh.write(make_docx(["Invoice Number: INV-77"]))
+            with contextlib.redirect_stdout(out):
+                rc = main([path])
+        self.assertEqual(rc, 0)
+        # One document, so no banner: an archive walk would print one per part.
+        self.assertEqual(out.getvalue().strip(), "Invoice Number: INV-77")
+
     def test_write_csv_emits_header_even_when_empty(self):
         import tempfile
         from vanilla_extract.batch import write_csv

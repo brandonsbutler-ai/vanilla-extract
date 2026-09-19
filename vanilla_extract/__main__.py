@@ -25,6 +25,7 @@ import zipfile
 
 from . import UnsupportedFormat, extract_archive, extract_file, __version__
 from .batch import Field, run as run_batch, write_csv
+from .dispatch import zip_holds_document
 from .fileinfo import DATASHEET_COLUMNS
 from .recognize import infer_schema
 from .report import write_report
@@ -251,8 +252,7 @@ def main(argv=None):
             failed = True
             continue
         try:
-            if zipfile.is_zipfile(path) and not path.lower().endswith(
-                    (".docx", ".pptx", ".xlsx", ".odt")):
+            if zipfile.is_zipfile(path) and not zip_holds_document(path):
                 for name, text, error in extract_archive(path):
                     if error:
                         print(f"vanilla: {path}!{name}: {error}",
