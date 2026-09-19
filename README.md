@@ -6,6 +6,10 @@ No `pip install`. No wheels, no native extensions, no C toolchain. Drop the pack
 runs — which is the entire point: in a locked-down environment, adding a dependency needs an
 approval that takes longer than the job.
 
+The examples use the `vanilla` command that an install provides. In a drop-in copy with nothing
+installed, the same thing is `python3 -m vanilla_extract`, run from the folder that holds the
+`vanilla_extract` package -- see [Install it](#install-it).
+
 ```bash
 vanilla contract.pdf
 vanilla --json invoices/*.docx > invoices.jsonl
@@ -239,11 +243,34 @@ LibreOffice PDF returns control characters instead of words.
 
 ## Install it
 
-**From source** -- nothing to resolve, because there is nothing to resolve:
+vanilla-extract is not published on PyPI. Every route below starts from a clone of
+<https://github.com/brandonsbutler-ai/vanilla-extract> or pip's git URL form.
+
+**Nothing installed at all** -- the air-gapped route. Fetch the code where there is a network,
+carry the folder across, and run the package where it sits. Python 3.9 or later is the only
+requirement; there is nothing to resolve because there is nothing to resolve:
 
 ```bash
-pip install .            # gives you a `vanilla` command
+git clone https://github.com/brandonsbutler-ai/vanilla-extract
+# carry the vanilla-extract folder across; then, from inside it:
+python3 -m vanilla_extract contract.pdf
+python3 -m vanilla_extract --batch invoices/ --csv results.csv --report review.html
 ```
+
+`python3 -m vanilla_extract` takes every option `vanilla` does. It is the form to use wherever this
+README says `vanilla` and nothing has been installed.
+
+**With pip, for a `vanilla` command on PATH:**
+
+```bash
+pip install .                    # from inside a clone
+pip install "vanilla-extract @ git+https://github.com/brandonsbutler-ai/vanilla-extract"
+```
+
+The package has no runtime dependencies, but pip still has to *build* it, with setuptools 61 or
+later, and by default it downloads setuptools to do so. On a machine with no network that
+download fails. Either use the route above, or install into an environment that already has
+setuptools and tell pip not to fetch it: `pip install --no-build-isolation .`
 
 **Linux, without pip:**
 
@@ -397,8 +424,12 @@ rather have one.
 ## The desktop application
 
 **Self-contained: one file, nothing to install.** No Python, no pip, no Qt on
-the machine it runs on. Download it, double-click it, drop a folder on the
-window.
+the machine it runs on: copy the file across, double-click it, drop a folder on
+the window.
+
+**There is no prebuilt download yet** -- no release carries the application --
+so it is built from a clone, on the platform it is for (PyInstaller does not
+cross-compile), and the one file it produces is what gets copied across:
 
 ```bash
 # to BUILD it (on the platform you are shipping to)
@@ -418,17 +449,21 @@ text editor.
 If you would rather run it from a Python you already have:
 
 ```bash
-pip install vanilla-extract[gui]
+pip install ".[gui]"             # from inside a clone
+pip install "vanilla-extract[gui] @ git+https://github.com/brandonsbutler-ai/vanilla-extract"
 vanilla-gui
 ```
+
+Or, with PySide6 already installed and nothing else, `python3 -m vanilla_extract.gui` from inside
+a clone.
 
 Drop a folder onto the window — or several, one at a time; each drop adds to the
 job and the summary shows what came from where. Pick what to do with it, press
 Run, and the review report opens in your browser.
 
-**The window is the only part of this project with a dependency.** `pip install
-vanilla-extract` installs a library and a command line that import nothing
-outside the standard library, and that is checked on every run of the
+**The window is the only part of this project with a dependency.** Installed
+without `[gui]`, the package is a library and a command line that import
+nothing outside the standard library, and that is checked on every run of the
 verifier. `[gui]` adds PySide6 for the window, and nothing else uses it.
 
 It is a native window rather than a local web page for one reason: a drop has

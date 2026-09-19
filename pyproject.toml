@@ -29,8 +29,9 @@ dependencies = []
 [project.optional-dependencies]
 build = ["pyinstaller>=6.0"]
 # The LIBRARY has no dependencies. The desktop window has one, and it lives
-# here so that `pip install vanilla-extract` stays dependency-free and
-# `pip install vanilla-extract[gui]` adds the toolkit for the window.
+# here so that installing the package stays dependency-free and the [gui]
+# extra -- `pip install ".[gui]"` from a clone; the package is not on PyPI --
+# adds the toolkit for the window.
 gui = ["PySide6-Essentials>=6.5"]
 
 [project.scripts]

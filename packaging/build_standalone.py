@@ -7,7 +7,7 @@ Two of them, and the second is the one that matters to most people:
     Vanilla Extract  the DESKTOP APPLICATION -- double-click it, drop a folder
                      on it, no terminal and no install step at all
 
-The application is the point. "pip install vanilla-extract[gui]" and then
+The application is the point. 'pip install ".[gui]"' from a clone and then
 "vanilla-gui" is two commands and a working Python, which is exactly the
 audience this tool does not have: the people who most need a dependency-free
 extractor are usually the ones who cannot install Python either. An icon they
