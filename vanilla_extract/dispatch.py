@@ -181,6 +181,46 @@ def sniff(data, filename=""):
     raise UnsupportedFormat(f"unrecognized format: {filename or 'input'}")
 
 
+def explain_empty(data, filename=""):
+    """(reason, detail) for a document whose extraction came back empty.
+
+    Four different failures used to share one label, "often a scan with no
+    text layer": a 0-byte file, a PDF cut off mid-stream, an office document
+    whose XML tripped the parser's entity-expansion limit, and a real scan.
+    Only the last one needs OCR.
+    """
+    if not data:
+        return ("empty_file", "the file is 0 bytes")
+    try:
+        handler = sniff(data, filename)
+    except UnsupportedFormat:
+        handler = None
+    if handler is pdf.extract_pdf:
+        return pdf.why_empty(data)
+    if handler in (ooxml.extract_docx, ooxml.extract_pptx,
+                   ooxml.extract_xlsx, ooxml.extract_odt):
+        # The readers skip a part that will not parse, so a document whose
+        # every part failed comes back empty. Say why the parts failed.
+        import xml.etree.ElementTree as ET
+        from .limits import Budget, read_member
+        budget = Budget()
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            for info in zf.infolist():
+                if not info.filename.endswith(".xml"):
+                    continue
+                try:
+                    ET.fromstring(read_member(zf, info, budget))
+                except ET.ParseError as exc:
+                    if "amplification" in str(exc):
+                        return ("limit_exceeded",
+                                f"{info.filename} expands XML entities past the "
+                                f"parser's safety limit (a 'billion laughs' "
+                                f"construction); it was refused, not read")
+                    return ("truncated_or_corrupt",
+                            f"{info.filename} is not well-formed XML ({exc})")
+    return ("no_text_found", "the document was read but holds no extractable text")
+
+
 def extract(data, filename=""):
     """Extract text from one document's bytes."""
     handler = sniff(data, filename)

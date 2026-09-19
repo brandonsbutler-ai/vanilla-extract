@@ -1878,6 +1878,57 @@ class TestEveryInputIsAccountedFor(unittest.TestCase):
         self.assertIn("pic.png: image_no_text_layer", err.getvalue())
 
 
+def _laughs_docx():
+    """A billion-laughs document.xml: ten levels of tenfold entity expansion."""
+    ents = "".join(f'<!ENTITY l{i} "{("&l%d;" % (i - 1)) * 10}">' for i in range(1, 10))
+    xml = ('<?xml version="1.0"?><!DOCTYPE d [<!ENTITY l0 "lol">' + ents + ']>'
+           '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/'
+           '2006/main"><w:body><w:p><w:r><w:t>&l9;</w:t></w:r></w:p></w:body></w:document>')
+    return _zip_bytes({"[Content_Types].xml": "<Types/>", "word/document.xml": xml})
+
+
+SCAN_PDF = (b"%PDF-1.4\n1 0 obj\n<< /Type /XObject /Subtype /Image /Width 1 /Height 1 "
+            b"/Filter /DCTDecode /Length 3 >>\nstream\nabc\nendstream\nendobj\n"
+            b"trailer\n<< /Root 1 0 R >>\n%%EOF\n")
+
+
+class TestWhyADocumentCameBackEmpty(unittest.TestCase):
+    """Four different failures were all labelled "often a scan with no text
+    layer", which sends the reader looking for OCR for a file that was empty,
+    cut off, or refused by a safety limit."""
+
+    def _run(self, files):
+        from vanilla_extract.batch import run
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        for name, data in files.items():
+            with open(os.path.join(d, name), "wb") as fh:
+                fh.write(data)
+        _, exceptions = run([d])
+        return {os.path.basename(e["file"]): (e["reason"], e["detail"]) for e in exceptions}
+
+    def test_each_empty_result_names_its_own_cause(self):
+        whole = make_pdf("BT (Invoice Number: INV-9 and a good deal more text) Tj ET")
+        got = self._run({
+            "zero.pdf": b"",
+            "cut.pdf": whole[:whole.index(b"stream") + 20],
+            "laughs.docx": _laughs_docx(),
+            "scan.pdf": SCAN_PDF,
+            "blank.txt": b"   \n\n  ",
+        })
+        self.assertEqual({k: v[0] for k, v in got.items()}, {
+            "zero.pdf": "empty_file",
+            "cut.pdf": "truncated_or_corrupt",
+            "laughs.docx": "limit_exceeded",
+            "scan.pdf": "no_text_found",
+            "blank.txt": "no_text_found",
+        })
+        self.assertIn("OCR", got["scan.pdf"][1])
+        for name in ("zero.pdf", "cut.pdf", "laughs.docx", "blank.txt"):
+            self.assertNotIn("scan", got[name][1], name)
+            self.assertNotIn("OCR", got[name][1], name)
+
+
 def _chromium():
     """A headless Chromium through Playwright, or None where it is not installed.
 

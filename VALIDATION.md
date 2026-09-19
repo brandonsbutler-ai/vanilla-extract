@@ -234,7 +234,7 @@ specific, named error instead:
 | Fonts with no character map | `UndecodableText`, raised only when *nothing* survives. A page mixing an unmapped decorative heading with readable body text keeps the body. |
 | Unrecognised format | `UnsupportedFormat` |
 | Decompression bomb | `ArchiveTooLarge`, raised before allocating |
-| Read fine, contains no text | Reported in the exceptions table as `no_text_found` -- almost always a scan with no text layer. Not a blank row. |
+| Read, and no text came out | Reported in the exceptions table, never a blank row, with the cause named: `empty_file` (0 bytes), `truncated_or_corrupt` (a PDF cut off before its end marker, or XML that is not well-formed), `limit_exceeded` (XML refused by the parser's entity-expansion limit), or `no_text_found` -- where the detail says "a scan; would need OCR" only when the pages really hold images. |
 
 In batch mode none of these abort the run. Each becomes a row in the exceptions table, so a
 folder of 400 documents with 3 bad ones yields 397 results and 3 named failures.
@@ -251,7 +251,7 @@ definition. These were tested, not assumed:
 | ZIP decompression bomb | **Refused.** Members are vetted against declared size and compression ratio before a byte is read, with a running budget for the archive. A 199 KB file declaring 200 MB is refused in 0.000 s. |
 | PDF decompression bomb | **Refused.** Inflation is bounded; a 597 KB file declaring 600 MB peaks near 128 MB instead of 616 MB. |
 | XXE (external entity) | Not exploitable. Verified against `file:///etc/passwd`. |
-| Billion laughs | Bounded by the XML parser a few levels in. Amplification, not denial of service. |
+| Billion laughs | Bounded by the XML parser a few levels in. Amplification, not denial of service; a document whose XML trips the limit is reported as `limit_exceeded`. |
 | Catastrophic backtracking | **Three patterns were quadratic and are fixed.** See *What an audit of the patterns found* below. Every regex in the package is now measured for growth rather than asserted to be linear. |
 | Spreadsheet formula injection | **Neutralized.** A document containing `=cmd\|' /C calc'!A0` would otherwise execute when the client opened the CSV. Cells leading with `= + - @` tab or CR are prefixed, in both the file writer and the report's in-browser export. |
 | Script injection into the report | **Fixed.** `</script>` inside a document's text closed the report's data block. Now escaped. |
@@ -359,7 +359,7 @@ Every one of those is now a named regression test.
 git clone https://github.com/brandonsbutler-ai/vanilla-extract
 cd vanilla_extract
 
-python3 -m unittest discover -s tests -v    # 138 unit tests
+python3 -m unittest discover -s tests -v    # 139 unit tests
 python3 verify_e2e.py                       # 186 end-to-end claim checks
 python3 benchmark.py /path/to/your/pdfs     # quality against pdftotext
 ```

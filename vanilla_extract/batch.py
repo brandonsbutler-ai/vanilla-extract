@@ -25,7 +25,7 @@ import zipfile
 
 from . import UnsupportedFormat, extract, extract_file
 from . import dispatch, fileinfo, recognize
-from .dispatch import skip_reason, zip_holds_document
+from .dispatch import explain_empty, skip_reason, zip_holds_document
 from .limits import MAX_ARCHIVE_DEPTH, ArchiveTooLarge, Budget, read_member
 
 # One decompression budget per archive, so the 1 GB whole-archive cap that
@@ -131,6 +131,11 @@ def _in_scope(name):
     """Not a SKIP_EXT name. Kept for callers that only have a name; the walk
     itself checks the bytes before trusting one (see dispatch.skip_reason)."""
     return not name.lower().endswith(SKIP_EXT)
+
+
+def _read(path):
+    with open(path, "rb") as fh:
+        return fh.read()
 
 
 def _head(path, size=1024):
@@ -395,14 +400,18 @@ def run(paths, fields=None, include_text=True, max_text=None, auto_labels=None,
                 continue
 
             if not text.strip():
-                # Read fine, contained nothing. Almost always a scan with no text
-                # layer -- a caller needs to see this, not a blank row.
-                _record(datasheet, meta, 0, "no_text_found")
-                _archive_failure(workspace, label, meta, source, "no_text_found")
-                exceptions.append({"file": label, "reason": "no_text_found",
-                                   "detail": "document read successfully but holds "
-                                             "no extractable text (often a scan "
-                                             "with no text layer)"})
+                # Read, and nothing came out. A caller needs to see this, not a
+                # blank row -- and needs the RIGHT reason: an empty file, a
+                # truncated one and a scan need three different next steps.
+                try:
+                    data = src_bytes if src_bytes is not None else _read(label)
+                    reason, detail = explain_empty(data, os.path.basename(label))
+                except (OSError, zipfile.BadZipFile, ArchiveTooLarge) as exc:
+                    reason, detail = ("no_text_found", f"holds no extractable text; "
+                                      f"re-reading it to say why failed: {exc}")
+                _record(datasheet, meta, 0, reason)
+                _archive_failure(workspace, label, meta, source, reason)
+                exceptions.append({"file": label, "reason": reason, "detail": detail})
                 continue
 
             if workspace is not None:

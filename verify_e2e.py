@@ -701,7 +701,8 @@ def verify_datasheet_ground_truth(workdir):
 
     check("a zero-byte file appears with size 0 and is reported, not skipped",
           rows.get("empty.txt", {}).get("size_bytes") == "0"
-          and rows["empty.txt"]["read_result"] == "no_text_found",
+          # empty_file, not no_text_found: a 0-byte file is not a scan
+          and rows["empty.txt"]["read_result"] == "empty_file",
           rows.get("empty.txt", {}).get("read_result"))
 
     if have_link:

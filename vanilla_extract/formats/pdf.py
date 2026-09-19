@@ -315,6 +315,24 @@ def _is_encrypted(data):
     return bool(re.search(rb"trailer.{0,2048}?/Encrypt", data, re.DOTALL))
 
 
+def why_empty(data):
+    """(reason, detail) for a PDF that yielded no text.
+
+    Only a PDF whose pages hold images is a likely scan. One that stops before
+    its end-of-file marker was cut off in transit or damaged, and pointing its
+    reader at OCR would send them the wrong way.
+    """
+    if b"%%EOF" not in data[-1024:]:
+        return ("truncated_or_corrupt",
+                "the PDF stops before its end-of-file marker: it was cut off or "
+                "damaged, so its text could not be reached")
+    if re.search(rb"/Subtype\s*/Image", data):
+        return ("no_text_found",
+                "the pages hold images but no text layer (a scan); reading it "
+                "would need OCR, which this tool does not do")
+    return ("no_text_found", "the PDF is intact but draws no text")
+
+
 def extract_pdf(fh):
     """Text of a PDF, page order preserved as far as stream order allows."""
     data = fh.read() if hasattr(fh, "read") else fh
