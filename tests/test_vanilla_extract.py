@@ -2536,11 +2536,19 @@ class TestOneContractForReasonsAndExits(unittest.TestCase):
         self.assertEqual(batch, single)
         self.assertEqual(batch, {"blank.txt": "empty_file", "cut.pdf": "truncated_or_corrupt"})
 
-    def test_every_reason_code_is_named_in_the_readme(self):
+    def test_the_readme_reason_table_matches_the_code_row_for_row(self):
+        """Read from the TABLE, not the prose: every code also appears in a
+        sentence somewhere, so deleting a row left a name search green."""
+        import re as _re
         from vanilla_extract.batch import REASONS
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         readme = open(os.path.join(root, "README.md"), encoding="utf-8").read()
-        self.assertEqual([c for c in REASONS if f"`{c}`" not in readme], [])
+        section = readme.split("Every reason a file can carry", 1)[1]
+        table = section.split("\n\n", 2)[1]              # the block after the lead-in
+        rows = _re.findall(r"^\| `([a-z_]+)` \| (.+?) \|$", table, _re.M)
+        self.assertTrue(table.startswith("| Reason | Meaning |"), table[:40])
+        self.assertEqual([code for code, _meaning in rows], list(REASONS))
+        self.assertEqual(dict(rows), REASONS)
 
     def test_every_reason_the_batch_emits_is_a_named_one(self):
         from vanilla_extract.batch import REASONS, run
