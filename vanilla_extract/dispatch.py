@@ -68,6 +68,47 @@ def _sniff_zip(data):
     return None
 
 
+# Names that mean media or a binary rather than a document. ONE list, shared
+# by the batch walk, the archive reader and the GUI pre-scan, so what is
+# counted is what is processed. A name is only a claim, though: skip_reason()
+# checks the bytes before believing it.
+_IMAGE_EXT = (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".webp")
+_KIND_BY_EXT = (
+    (_IMAGE_EXT, "image"),
+    ((".svg",), "vector image"),
+    ((".mp3", ".mp4", ".mov", ".avi", ".wav"), "audio or video"),
+    ((".woff", ".woff2", ".ttf", ".otf"), "font"),
+    ((".pyc", ".pyo", ".so", ".dylib", ".dll", ".exe", ".bin", ".o", ".a",
+      ".class", ".jar"), "compiled code or binary"),
+    ((".db", ".sqlite", ".lock"), "database or lock file"),
+)
+SKIP_EXT = tuple(ext for exts, _kind in _KIND_BY_EXT for ext in exts)
+
+
+def skip_reason(name, head, whole=None):
+    """(reason, detail) for a file that is not read, or None to read it.
+
+    Only a SKIP_EXT name can be skipped, and only when its bytes agree: a PDF,
+    RTF or office document renamed .jpg carries its signature and is read like
+    any other document. `head` is the first KB; `whole` is a zero-argument
+    callable giving a path or the bytes, consulted only for a zip signature,
+    because telling an office document from a .jar needs its member list.
+    """
+    lower = name.lower()
+    if not lower.endswith(SKIP_EXT):
+        return None
+    if head.startswith((b"%PDF", rb"{\rtf")) or b"%PDF-" in head[:1024]:
+        return None
+    if head.startswith(b"PK") and whole is not None and zip_holds_document(whole()):
+        return None
+    kind = next(k for exts, k in _KIND_BY_EXT if lower.endswith(exts))
+    if kind == "image":
+        return ("image_no_text_layer",
+                "an image holds pixels, not text; reading it would need OCR, "
+                "which this tool does not do")
+    return ("not_a_document", f"{kind}; not a document format this tool reads")
+
+
 def zip_holds_document(source):
     """True when a zip -- a path or its bytes -- is an office document.
 

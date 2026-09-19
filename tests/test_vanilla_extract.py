@@ -272,8 +272,10 @@ class TestArchive(unittest.TestCase):
         texts = {name: text for name, text, err in results if text is not None}
         self.assertEqual(texts.get("a.txt"), "alpha")
         self.assertEqual(texts.get("b.docx"), "beta")
-        # the image is skipped by extension, not reported as an error
+        # the image is not read -- and it is NAMED, with its reason
         self.assertNotIn("c.png", texts)
+        errors = {name: err for name, text, err in results if err}
+        self.assertIn("image_no_text_layer", errors.get("c.png", ""))
 
 
 
@@ -297,7 +299,8 @@ class TestCountMatchesTheWork(unittest.TestCase):
         with zipfile.ZipFile(os.path.join(d, "bundle.zip"), "w") as z:
             for n in ("one.txt", "two.txt", "three.txt"):
                 z.writestr(n, "content of " + n)
-        # and an archive whose every member is skipped: it yields NOTHING
+        # and an archive whose every member is not a document: each is still
+        # a unit of work, because each becomes an exception row
         with zipfile.ZipFile(os.path.join(d, "compiled.zip"), "w") as z:
             z.writestr("mod.pyc", "\x00binary")
             z.writestr("lib.so", "\x00binary")
@@ -314,8 +317,8 @@ class TestCountMatchesTheWork(unittest.TestCase):
     def test_an_archive_counts_as_its_members_not_as_one_file(self):
         from vanilla_extract.gui.session import Index
         d = self._tree()
-        # loose.txt + three members of bundle.zip = 4; compiled.zip yields none
-        self.assertEqual(Index(d).count, 4, Index(d).files)
+        # loose.txt + three members of bundle.zip + two of compiled.zip = 6
+        self.assertEqual(Index(d).count, 6, Index(d).files)
 
     def test_the_denominator_is_never_smaller_than_the_work(self):
         """The 'past 100%' failure, stated as the invariant it violates."""
@@ -350,9 +353,9 @@ class TestBatch(unittest.TestCase):
             results, exceptions = run([d])
         names = sorted(os.path.basename(r["file"]) for r in results)
         self.assertEqual(names, ["a.txt", "b.docx"])
-        # the image is skipped silently; the encrypted PDF is REPORTED
+        # the encrypted PDF and the image are both REPORTED, never dropped
         reasons = {os.path.basename(e["file"]): e["reason"] for e in exceptions}
-        self.assertEqual(reasons, {"c.pdf": "encrypted"})
+        self.assertEqual(reasons, {"c.pdf": "encrypted", "d.png": "image_no_text_layer"})
 
     def test_unreadable_file_never_aborts_the_batch(self):
         """One bad document must not cost the caller the other 399.
@@ -371,11 +374,11 @@ class TestBatch(unittest.TestCase):
         self.assertIn("unsupported_format",
                       {e["reason"] for e in exceptions})
 
-    def test_skipped_extensions_and_dot_dirs_are_never_walked(self):
-        """The run must process exactly what the pre-scan counts: a .so binary
-        and anything under a dot-directory (.git, .venv) are out of scope, so
-        they produce neither a result nor an exception -- the bug that let a
-        scan walk .git/.venv, copy them, and count past 100%."""
+    def test_tooling_directories_are_reported_but_never_walked(self):
+        """A scan once walked .git/.venv, copied them, and counted past 100%.
+        They are still not walked -- nothing inside becomes a row -- but each
+        is now REPORTED with the number of files it holds, and a .so binary is
+        named as not a document rather than silently dropped."""
         import tempfile
         from vanilla_extract.batch import run
         with tempfile.TemporaryDirectory() as d:
@@ -385,13 +388,14 @@ class TestBatch(unittest.TestCase):
             open(os.path.join(d, ".git", "config"), "w").write("[core]\n")
             os.makedirs(os.path.join(d, ".venv"))
             open(os.path.join(d, ".venv", "pkg.py"), "w").write("x = 1\n")
+            open(os.path.join(d, ".venv", "pyvenv.cfg"), "w").write("home = x\n")
             results, exceptions = run([d])
-        touched = {os.path.basename(r.get("path", "")) for r in results} | \
-                  {os.path.basename(e.get("path", "")) for e in exceptions}
-        self.assertEqual(len(results), 1)
-        self.assertNotIn("lib.so", touched)
-        self.assertNotIn("config", touched)
-        self.assertNotIn("pkg.py", touched)
+        self.assertEqual([os.path.basename(r["file"]) for r in results], ["keep.txt"])
+        got = {os.path.basename(e["file"]): (e["reason"], e.get("files_not_read"))
+               for e in exceptions}
+        self.assertEqual(got, {"lib.so": ("not_a_document", None),
+                               ".git": ("excluded_directory", 1),
+                               ".venv": ("excluded_directory", 2)})
 
     def test_empty_document_is_an_exception_not_a_blank_row(self):
         """A scan with no text layer must be named, not returned as empty."""
@@ -1757,6 +1761,121 @@ class TestPostRenameReviewRegressions(unittest.TestCase):
         """#10 -- one subprocess per file dominated a large scan."""
         from vanilla_extract import fileinfo
         self.assertTrue(hasattr(fileinfo, "_BIRTHTIME_SUPPORT"))
+
+
+def _zip_bytes(members):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name, data in members.items():
+            zf.writestr(name, data)
+    return buf.getvalue()
+
+
+PNG = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR binary pixels"
+
+
+class TestEveryInputIsAccountedFor(unittest.TestCase):
+    """inputs == rows + exceptions (+ reported exclusions), with nothing silent.
+
+    Found by a reconcile of a real delivery: an image-named file (even a real
+    PDF renamed .jpg), a dot-folder such as .from_client/, and a zip inside a
+    zip each appeared in no table at all, with exit status 0.
+    """
+
+    def _tree(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+
+        def put(rel, data):
+            path = os.path.join(d, rel)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "wb") as fh:
+                fh.write(data if isinstance(data, bytes) else data.encode())
+        put("a.txt", "Invoice Number: INV-1\n")
+        put("photo.png", PNG)
+        put("invoice.jpg", make_pdf("BT (Invoice Number: INV-2) Tj ET"))
+        put("lib.so", b"\x7fELF\x00binary")
+        put(".from_client/inv.txt", "Invoice Number: INV-3\n")
+        put(".git/config", "[core]\n")
+        put(".git/objects/ab/cdef", b"\x00blob")
+        put("pkg/__pycache__/m.cpython-312.pyc", b"\x00pyc")
+        put("env/pyvenv.cfg", "home = /usr/bin\n")
+        put("env/lib/site.py", "x = 1\n")
+        inner = _zip_bytes({"deep.txt": "Invoice Number: INV-4\n"})
+        put("bundle.zip", _zip_bytes({"one.txt": "Invoice Number: INV-5\n",
+                                      "pic.png": PNG, "inner.zip": inner}))
+        return d
+
+    def test_rows_plus_exceptions_account_for_every_input(self):
+        from vanilla_extract.batch import run
+        d = self._tree()
+        results, exceptions = run([d])
+        # The inputs: every file on disk, an archive standing for its members.
+        # bundle.zip holds one.txt, pic.png and inner.zip; inner.zip holds one.
+        on_disk = sum(len(files) for _r, _d, files in os.walk(d))
+        inputs = on_disk - 1 + 2 + 1
+        per_file = [e for e in exceptions if "files_not_read" not in e]
+        excluded = sum(e["files_not_read"] for e in exceptions
+                       if "files_not_read" in e)
+        self.assertEqual(len(results) + len(per_file) + excluded, inputs,
+                         (sorted(r["file"] for r in results), exceptions))
+
+    def test_what_each_input_became(self):
+        from vanilla_extract.batch import run
+        d = self._tree()
+        results, exceptions = run([d])
+        rel = lambda p: os.path.relpath(p, d)          # noqa: E731
+        read = sorted(rel(r["file"]) for r in results)
+        self.assertEqual(read, ["a.txt", "bundle.zip!inner.zip!deep.txt",
+                                "bundle.zip!one.txt", "invoice.jpg"])
+        reasons = {rel(e["file"]): e["reason"] for e in exceptions}
+        self.assertEqual(reasons, {
+            "photo.png": "image_no_text_layer",
+            "bundle.zip!pic.png": "image_no_text_layer",
+            "lib.so": "not_a_document",
+            ".from_client": "hidden_directory",
+            ".git": "excluded_directory",
+            os.path.join("pkg", "__pycache__"): "excluded_directory",
+            "env": "excluded_directory",
+        })
+
+    def test_the_gui_prescan_still_counts_exactly_the_work(self):
+        from vanilla_extract import batch
+        from vanilla_extract.gui.session import Index
+        d = self._tree()
+        self.assertEqual(Index(d).count, sum(1 for _ in batch._walk([d])))
+
+    def test_nesting_past_the_limit_is_reported_not_dropped(self):
+        from vanilla_extract.batch import run
+        from vanilla_extract.limits import MAX_ARCHIVE_DEPTH
+        data = _zip_bytes({"deep.txt": "Invoice Number: INV-DEEP\n"})
+        for level in range(MAX_ARCHIVE_DEPTH + 2):
+            data = _zip_bytes({f"level{level}.zip": data})
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        with open(os.path.join(d, "nested.zip"), "wb") as fh:
+            fh.write(data)
+        results, exceptions = run([d])
+        self.assertEqual(results, [])
+        self.assertEqual([e["reason"] for e in exceptions], ["limit_exceeded"])
+
+    def test_single_file_mode_reads_a_nested_zip_and_names_what_it_skips(self):
+        path = os.path.join(self._tree(), "bundle.zip")
+        got = {name: (text, err) for name, text, err in extract_archive(path)}
+        self.assertEqual(got["inner.zip!deep.txt"][0].strip(), "Invoice Number: INV-4")
+        self.assertIsNone(got["pic.png"][0])
+        self.assertIn("image_no_text_layer", got["pic.png"][1])
+        self.assertEqual(sorted(got), ["inner.zip!deep.txt", "one.txt", "pic.png"])
+
+    def test_the_cli_says_what_it_skipped_inside_an_archive(self):
+        import contextlib
+        from vanilla_extract.__main__ import main
+        path = os.path.join(self._tree(), "bundle.zip")
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            main([path])
+        self.assertIn("INV-4", out.getvalue())
+        self.assertIn("pic.png: image_no_text_layer", err.getvalue())
 
 
 def _chromium():

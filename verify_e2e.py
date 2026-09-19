@@ -476,6 +476,41 @@ def verify_batch(corpus, workdir):
     check("every file on disk appears in results or exceptions (nothing vanishes)",
           not missing, f"unaccounted for: {sorted(missing)}" if missing else "")
 
+    # The reconcile a client would do: every input is a row, an exception, or
+    # inside a directory the exceptions table names with its file count. An
+    # image-named file (even a real PDF renamed .jpg), a dot-folder and a zip
+    # inside a zip each used to appear in no table at all, with exit 0.
+    import re as _re
+    rec = os.path.join(workdir, "reconcile")
+    for rel, data in (("memo.txt", b"Reference RC-1\n"),
+                      ("photo.png", b"\x89PNG\r\n\x1a\n\x00pixels"),
+                      (".from_client/brief.txt", b"Reference RC-2\n"),
+                      (".git/HEAD", b"ref: refs/heads/main\n")):
+        os.makedirs(os.path.dirname(os.path.join(rec, rel)), exist_ok=True)
+        with open(os.path.join(rec, rel), "wb") as fh:
+            fh.write(data)
+    if "pdf" in corpus:
+        shutil.copy2(corpus["pdf"][0], os.path.join(rec, "scan_of_invoice.jpg"))
+    inner = io.BytesIO()
+    with zipfile.ZipFile(inner, "w") as zf:
+        zf.writestr("deep.txt", "Reference RC-3\n")
+    with zipfile.ZipFile(os.path.join(rec, "outer.zip"), "w") as zf:
+        zf.writestr("top.txt", "Reference RC-4\n")
+        zf.writestr("inner.zip", inner.getvalue())
+    r_csv, r_exc = os.path.join(workdir, "rec_rows.csv"), os.path.join(workdir, "rec_exc.csv")
+    r = cli("--batch", rec, "--csv", r_csv, "--exceptions", r_exc, "--no-text")
+    rrows = list(_csv.DictReader(open(r_csv, encoding="utf-8")))
+    rexcs = list(_csv.DictReader(open(r_exc, encoding="utf-8")))
+    held = [int(m.group(1)) for e in rexcs
+            for m in [_re.search(r"(\d+) file\(s\) not read", e["detail"])] if m]
+    per_file = len(rexcs) - len(held)
+    # outer.zip stands for its members: top.txt, and deep.txt inside inner.zip
+    inputs = sum(len(f) for _r, _d, f in os.walk(rec)) - 1 + 2
+    check("reconcile: inputs == rows + exceptions + files in reported exclusions "
+          f"({inputs} == {len(rrows)} + {per_file} + {sum(held)})",
+          r.returncode == 0 and inputs == len(rrows) + per_file + sum(held),
+          "\n".join(f"{e['file'].rsplit('/', 1)[-1]}: {e['reason']}" for e in rexcs))
+
     # --field, including an alternation whose group does not participate
     f_csv = os.path.join(workdir, "fields.csv")
     r = cli("--batch", src, "--csv", f_csv, "--no-text",

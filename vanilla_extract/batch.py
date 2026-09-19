@@ -18,14 +18,15 @@ command rather than a script.
 """
 
 import csv
+import io
 import os
 import re
 import zipfile
 
 from . import UnsupportedFormat, extract, extract_file
-from . import fileinfo, recognize
-from .dispatch import zip_holds_document
-from .limits import ArchiveTooLarge, Budget, read_member
+from . import dispatch, fileinfo, recognize
+from .dispatch import skip_reason, zip_holds_document
+from .limits import MAX_ARCHIVE_DEPTH, ArchiveTooLarge, Budget, read_member
 
 # One decompression budget per archive, so the 1 GB whole-archive cap that
 # limits.py documents actually applies in batch mode. Without it only the
@@ -38,23 +39,44 @@ def _budget_for(archive):
     return _BUDGETS.setdefault(os.path.abspath(archive), Budget())
 from .formats.pdf import EncryptedPDF, UndecodableText
 
-# Media and binaries we do not attempt; listing them keeps the exceptions
-# table meaningful rather than full of images.
-#
-# ARCHIVE EXTENSIONS ARE DELIBERATELY ABSENT. A readable .zip is recursed by
-# _walk and never reaches here. An UNREADABLE one used to land in this list and
-# disappear -- no result row, no exception row -- because is_zipfile() said no
-# and the extension said skip. A corrupt archive is exactly the thing a caller
-# needs told about, so it now falls through to extraction and is reported as
-# an unsupported format instead.
-# ONE list of "never a document", shared with the GUI pre-scan (session.Index)
-# so the files it counts are exactly the files this walk processes. Two divergent
-# copies drifted once and let a run walk .git/.venv, copy 36 GB and count past
-# 100%. It covers images/audio/video/fonts AND compiled/code/database artifacts.
-SKIP_EXT = (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".svg", ".webp",
-            ".mp3", ".mp4", ".mov", ".avi", ".wav", ".woff", ".woff2", ".ttf",
-            ".otf", ".pyc", ".pyo", ".so", ".dylib", ".dll", ".exe", ".bin",
-            ".o", ".a", ".class", ".jar", ".db", ".sqlite", ".lock")
+# Media and binaries: a name on this list is a CLAIM that the file is not a
+# document. dispatch.skip_reason() checks the bytes before believing it, and a
+# file that really is media is REPORTED (image_no_text_layer, not_a_document)
+# rather than dropped -- it used to appear in no table at all, with exit 0.
+# ONE list, shared with the GUI pre-scan (session.Index), so what it counts is
+# what this walk processes.
+SKIP_EXT = dispatch.SKIP_EXT
+
+# Directories that are tooling, not a delivery. They are not walked -- a scan
+# once copied 36 GB of .git and .venv -- but each is REPORTED, with the number
+# of files it holds, the way a survey states what it excluded.
+_NOISE_DIRS = {".git": "version control", ".hg": "version control",
+               ".svn": "version control", "__pycache__": "Python bytecode cache",
+               ".tox": "tool cache", ".mypy_cache": "tool cache",
+               ".pytest_cache": "tool cache", ".ruff_cache": "tool cache"}
+
+
+class Skip:
+    """An input the walk accounts for without reading it."""
+
+    def __init__(self, reason, detail, member=None, files=None):
+        self.reason, self.detail = reason, detail
+        self.member = member            # the Member, for one inside an archive
+        self.files = files              # for a directory: files it holds
+
+
+class Member(tuple):
+    """(container, info, top): an archive member. `container` is the archive's
+    path, or its bytes when it was itself found inside an archive; `top` is the
+    archive on disk, whose one budget every nested read spends from."""
+
+    def __new__(cls, container, info, top):
+        return super().__new__(cls, (container, info, top))
+
+
+def _zip(container):
+    return zipfile.ZipFile(container if isinstance(container, str)
+                           else io.BytesIO(container))
 
 
 class Field:
@@ -106,68 +128,126 @@ class Field:
 
 
 def _in_scope(name):
-    """A candidate document: not a non-document extension. The SAME rule the
-    GUI pre-scan applies, so what runs is exactly what was counted."""
+    """Not a SKIP_EXT name. Kept for callers that only have a name; the walk
+    itself checks the bytes before trusting one (see dispatch.skip_reason)."""
     return not name.lower().endswith(SKIP_EXT)
 
 
+def _head(path, size=1024):
+    with open(path, "rb") as fh:
+        return fh.read(size)
+
+
+def _excluded(root, name):
+    """(reason, what) for a directory the walk does not enter, or None."""
+    if name in _NOISE_DIRS:
+        return "excluded_directory", _NOISE_DIRS[name]
+    if os.path.isfile(os.path.join(root, name, "pyvenv.cfg")):
+        return "excluded_directory", "Python virtual environment"
+    if name.startswith("."):
+        return "hidden_directory", "hidden directory"
+    return None
+
+
 def _walk(paths, recurse_archives=True):
-    """Yield (label, loader) for every candidate document under `paths`.
+    """Yield (label, source) for EVERY input under `paths`.
 
-    SKIP_EXT files are dropped at BOTH the file level and inside archives, and
-    ON DISK a directory whose name starts with a dot (.git, .venv, caches) is
-    pruned as well, so a scanned tree's version control and virtualenv are never
-    walked, copied or counted. This rule matches session.Index exactly.
+    `source` is None for a file on disk, a Member for a document inside an
+    archive, or a Skip for an input that is accounted for without being read:
+    media and binaries (checked by their bytes, not their names), directories
+    that are tooling rather than a delivery, hidden directories, and archives
+    nested past MAX_ARCHIVE_DEPTH. Nothing is dropped: every yield becomes a
+    result row or an exception row, and the GUI pre-scan counts these same
+    yields, so its number is the run's number.
 
-    The dot-directory prune is the on-disk walk only. A `.git/config` carried
-    INSIDE an archive still comes through -- it has no SKIP_EXT extension, so it
-    reaches extraction and is reported as an unsupported format. That is a row
-    in the report rather than a silent drop, which is the behaviour this module
-    promises; pruning it too would be a change of product behaviour, not a fix.
+    A hidden directory (.from_client/) is reported rather than read, because a
+    dot-name is how tooling hides itself; naming it on the command line reads it.
     """
-    def _archive(full):
+    def _archive(container, prefix, top, depth):
         try:
-            with zipfile.ZipFile(full) as zf:
+            with _zip(container) as zf:
                 members = [i for i in zf.infolist() if not i.is_dir()]
         except (zipfile.BadZipFile, OSError, RuntimeError):
-            yield full, None
+            yield prefix, None
             return
         for i, info in enumerate(members):
-            if not _in_scope(info.filename):
-                continue
             dup = sum(1 for m in members[:i] if m.filename == info.filename)
             suffix = f"#{dup + 1}" if dup else ""
-            yield f"{full}!{info.filename}{suffix}", (full, info)
+            label = f"{prefix}!{info.filename}{suffix}"
+            member = Member(container, info, top)
+            try:
+                with _zip(container) as zf, zf.open(info) as fh:
+                    head = fh.read(1024)
+            except (zipfile.BadZipFile, OSError, RuntimeError, ValueError):
+                head = b""          # encrypted or damaged: extraction reports it
+            if not head.startswith(b"PK"):
+                why = skip_reason(info.filename, head)
+                yield label, (Skip(*why, member=member) if why else member)
+                continue
+            # A zip signature: an office document, or an archive to open.
+            try:
+                with _zip(container) as zf:
+                    data = read_member(zf, info, _budget_for(top))
+            except ArchiveTooLarge as exc:
+                yield label, Skip("archive_bomb", str(exc), member=member)
+                continue
+            except (zipfile.BadZipFile, OSError, RuntimeError) as exc:
+                yield label, Skip("unreadable", f"{type(exc).__name__}: {exc}",
+                                  member=member)
+                continue
+            if zip_holds_document(data) or not zipfile.is_zipfile(io.BytesIO(data)):
+                # A peek, not the read: extraction reads it again and spends
+                # then, so the archive budget must not be charged twice.
+                _budget_for(top).remaining += len(data)
+                why = skip_reason(info.filename, head, lambda: data)
+                yield label, (Skip(*why, member=member) if why else member)
+            elif depth + 1 > MAX_ARCHIVE_DEPTH:
+                yield label, Skip("limit_exceeded",
+                                  f"archive nested more than {MAX_ARCHIVE_DEPTH} "
+                                  f"deep; not opened", member=member)
+            else:
+                yield from _archive(data, label, top, depth + 1)
+
+    def _file(full):
+        if full.lower().endswith(SKIP_EXT):
+            try:
+                why = skip_reason(full, _head(full), lambda: full)
+            except OSError:
+                why = None          # unreadable: extraction names the error
+            if why:
+                yield full, Skip(*why)
+                return
+        # Content decides, not the name: a DOCX saved as .pdf is a document, a
+        # plain archive saved as .docx is an archive. is_zipfile only validates
+        # the end-of-central-directory record, so a damaged central directory
+        # passes it and raises inside _archive -- which yields (full, None)
+        # rather than killing the batch.
+        if (recurse_archives and zipfile.is_zipfile(full)
+                and not zip_holds_document(full)):
+            yield from _archive(full, full, full, 0)
+        else:
+            yield full, None
 
     for path in paths:
         if os.path.isdir(path):
             for root, dirs, files in os.walk(path):
-                dirs[:] = [d for d in dirs if not d.startswith(".")]
-                for name in sorted(files):
-                    if not _in_scope(name):
+                kept = []
+                for d in sorted(dirs):
+                    why = _excluded(root, d)
+                    if why is None:
+                        kept.append(d)
                         continue
-                    full = os.path.join(root, name)
-                    # Recurse into archives found by walking, too. Previously
-                    # only archives named on the command line were opened, so a
-                    # bundle.zip inside a scanned folder produced no result row
-                    # AND no exception row -- it simply disappeared, which is
-                    # the one thing this module promises never to do.
-                    # Content decides, not the name: a DOCX saved as .pdf is
-                    # a document, a plain archive saved as .docx is an archive.
-                    if (recurse_archives and zipfile.is_zipfile(full)
-                            and not zip_holds_document(full)):
-                        yield from _archive(full)
-                    else:
-                        yield full, None
-        elif (zipfile.is_zipfile(path) and recurse_archives
-                and not zip_holds_document(path)):
-            # is_zipfile only validates the end-of-central-directory record, so a
-            # damaged central directory passes it and raises inside _archive --
-            # which yields (path, None) rather than killing the batch, the one
-            # thing this module promises never to happen.
-            yield from _archive(path)
-        elif _in_scope(path):
-            yield path, None
+                    full = os.path.join(root, d)
+                    n = sum(len(f) for _r, _d, f in os.walk(full))
+                    tail = ("name it on the command line to read it"
+                            if why[0] == "hidden_directory" else "not walked")
+                    yield full, Skip(why[0], f"{why[1]}: {n} file(s) not read; {tail}",
+                                     files=n)
+                dirs[:] = kept
+                for name in sorted(files):
+                    yield from _file(os.path.join(root, name))
+        else:
+            yield from _file(path)
 
 
 def _load(label, source):
@@ -175,9 +255,9 @@ def _load(label, source):
     archive the original alongside what was read from it."""
     if source is None:
         return extract_file(label), label, None
-    archive, info = source
-    with zipfile.ZipFile(archive) as zf:
-        data = read_member(zf, info, _budget_for(archive))
+    container, info, top = source
+    with _zip(container) as zf:
+        data = read_member(zf, info, _budget_for(top))
     return (extract(data, os.path.basename(info.filename.replace("\\", "/"))),
             None, data)
 
@@ -197,9 +277,9 @@ def _archive_failure(workspace, label, meta, source, reason):
     src_bytes = None
     if source is not None:
         try:
-            archive, info = source
-            with zipfile.ZipFile(archive) as zf:
-                src_bytes = read_member(zf, info, _budget_for(archive))
+            container, info, top = source
+            with _zip(container) as zf:
+                src_bytes = read_member(zf, info, _budget_for(top))
         except Exception:                 # noqa: BLE001 - best effort only
             src_bytes = None
     try:
@@ -252,16 +332,29 @@ def run(paths, fields=None, include_text=True, max_text=None, auto_labels=None,
         _failed_before = len(exceptions)
         try:
             meta = None
+            member = source.member if isinstance(source, Skip) else source
             if collect_metadata or workspace is not None:
                 try:
-                    if source is None:
+                    if member is None:
                         meta = fileinfo.stat_record(label)
                     else:
-                        archive, info = source
-                        meta = fileinfo.zip_member_record(info, archive)
+                        _container, info, top = member
+                        meta = fileinfo.zip_member_record(info, top)
+                        meta["path"] = label    # names the nesting, if any
                 except OSError as exc:
                     meta = {"path": label, "name": os.path.basename(label),
                             "read_result": f"stat failed: {exc}"}
+            if isinstance(source, Skip):
+                # Accounted for, not read: media, tooling, hidden, too deep.
+                _record(datasheet, meta, None, source.reason)
+                row = {"file": label, "reason": source.reason,
+                       "detail": source.detail}
+                if source.files is not None:
+                    row["files_not_read"] = source.files
+                else:
+                    _archive_failure(workspace, label, meta, member, source.reason)
+                exceptions.append(row)
+                continue
             try:
                 text, src_path, src_bytes = _load(label, source)
             except EncryptedPDF as exc:

@@ -69,6 +69,14 @@ text layer, and files whose fonts carry no character map all look like empty doc
 extraction tools and arrive as blank rows nobody notices until the data is already in use. A bad
 document never aborts the batch, and it never silently becomes an empty row either.
 
+**Every input is accounted for**: rows + exceptions = inputs. A file named like an image or a binary
+is checked by its bytes first, so a PDF renamed `.jpg` is read; a real image is listed as
+`image_no_text_layer`, other media and binaries as `not_a_document`. Tooling directories (`.git`,
+`__pycache__`, virtualenvs, tool caches) are not walked, but each is listed as
+`excluded_directory` with the number of files it holds; any other hidden directory is listed as
+`hidden_directory` -- name it on the command line to read it. A zip inside a zip is opened, up to
+eight levels deep; past that it is listed as `limit_exceeded`.
+
 ## Formats
 
 | | |
@@ -82,7 +90,7 @@ document never aborts the batch, and it never silently becomes an empty row eith
 | **Recognition** | label/value pairs, typed values, and schema inferred across a corpus |
 | **Datasheet** | size, timestamps, rwx permissions, owner, links, filesystem -- searchable |
 | **Text** | TXT, MD, LOG, with encoding detection |
-| **Archives** | ZIP containing any of the above |
+| **Archives** | ZIP containing any of the above, including ZIPs nested inside ZIPs |
 
 Routing is by **signature first, extension second, and the extension is not allowed to
 contradict a missing signature.** In any real corpus a meaningful fraction of files are misnamed
@@ -417,8 +425,8 @@ Every option the command accepts. `--help` prints the same list.
 Two layers, both runnable:
 
 ```bash
-python3 -m unittest discover -s tests -v     # 132 unit tests
-python3 verify_e2e.py                        # 185 end-to-end claim checks
+python3 -m unittest discover -s tests -v     # 138 unit tests
+python3 verify_e2e.py                        # 186 end-to-end claim checks
 ```
 
 `verify_e2e.py` exists because unit tests check units, not promises. It generates a fresh corpus
@@ -437,7 +445,7 @@ figures here are whatever it last measured, not what would read best.
 python3 -m unittest discover -s tests -v
 ```
 
-132 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
+138 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
 there is nothing opaque in the repo. The suite covers the cases that actually break extractors:
 balanced parens inside PDF strings, escaped close-parens, octal escapes, odd hex nibbles,
 RTF `\fonttbl` contents leaking into output, cp1252 fallback, and misnamed files -- plus the

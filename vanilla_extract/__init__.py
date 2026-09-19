@@ -15,18 +15,13 @@ import io
 import os
 import zipfile
 
-from .dispatch import UnsupportedFormat, extract, sniff
-from .limits import ArchiveTooLarge, Budget, read_member
+from .dispatch import (UnsupportedFormat, extract, skip_reason, sniff,
+                       zip_holds_document)
+from .limits import MAX_ARCHIVE_DEPTH, ArchiveTooLarge, Budget, read_member
 
 __version__ = "0.2.0"
 __all__ = ["extract", "extract_file", "extract_archive", "sniff",
            "UnsupportedFormat", "ArchiveTooLarge", "__version__"]
-
-# Skip these inside archives rather than trying to sniff them.
-_BINARY_EXT = (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".svg",
-               ".mp3", ".mp4", ".mov", ".avi", ".zip", ".gz", ".tar",
-               ".exe", ".dll", ".so", ".dylib", ".woff", ".woff2", ".ttf")
-
 
 def extract_file(path):
     """Extract text from a file on disk."""
@@ -40,34 +35,69 @@ def extract_archive(path, max_members=500):
 
     Yields (member_name, text_or_None, error_or_None) so a caller can report
     what was skipped instead of quietly returning less than the archive held.
+    Every member yields exactly once: a zip inside the zip is opened and its
+    members named `inner.zip!member` (to MAX_ARCHIVE_DEPTH, on one budget), and
+    a member that is media or a binary is named with its reason -- both used
+    to be dropped without a word.
 
     `max_members` is a guard, not a limit on ambition: a zip bomb with a
     million entries should not hang the caller.
     """
-    budget = Budget()
+    seen = [0]
     with zipfile.ZipFile(path) as zf:
-        for i, info in enumerate(zf.infolist()):
-            if i >= max_members:
-                yield ("<truncated>", None,
-                       f"stopped after {max_members} members")
-                return
-            if info.is_dir():
+        yield from _members(zf, "", Budget(), seen, max_members, 0)
+
+
+def _members(zf, prefix, budget, seen, max_members, depth):
+    """extract_archive's walk of one (possibly nested) archive. Returns True
+    once the member guard stops it, so an enclosing archive stops too."""
+    for info in zf.infolist():
+        if seen[0] >= max_members:
+            yield ("<truncated>", None, f"stopped after {max_members} members")
+            return True
+        seen[0] += 1
+        if info.is_dir():
+            continue
+        name = prefix + info.filename
+        try:
+            with zf.open(info) as fh:
+                head = fh.read(1024)
+        except (zipfile.BadZipFile, RuntimeError, OSError, ValueError):
+            head = b""
+        if not head.startswith(b"PK"):
+            why = skip_reason(info.filename, head)
+            if why:
+                yield (name, None, f"{why[0]}: {why[1]}")
                 continue
-            name = info.filename
-            if name.lower().endswith(_BINARY_EXT):
+        try:
+            data = read_member(zf, info, budget)
+        except ArchiveTooLarge as exc:
+            yield (name, None, str(exc))
+            continue
+        except (zipfile.BadZipFile, RuntimeError) as exc:
+            yield (name, None, f"unreadable: {exc}")
+            continue
+        if (data[:2] == b"PK" and not zip_holds_document(data)
+                and zipfile.is_zipfile(io.BytesIO(data))):
+            if depth + 1 > MAX_ARCHIVE_DEPTH:
+                yield (name, None, f"limit_exceeded: archive nested more than "
+                                   f"{MAX_ARCHIVE_DEPTH} deep; not opened")
                 continue
-            try:
-                data = read_member(zf, info, budget)
-            except ArchiveTooLarge as exc:
-                yield (name, None, str(exc))
-                continue
-            except (zipfile.BadZipFile, RuntimeError) as exc:
-                yield (name, None, f"unreadable: {exc}")
-                continue
-            try:
-                yield (name, extract(data, os.path.basename(name)), None)
-            except UnsupportedFormat as exc:
-                yield (name, None, str(exc))
-            except Exception as exc:                  # noqa: BLE001
-                # One malformed member must not abort the whole archive.
-                yield (name, None, f"{type(exc).__name__}: {exc}")
+            with zipfile.ZipFile(io.BytesIO(data)) as inner:
+                stopped = yield from _members(inner, name + "!", budget, seen,
+                                              max_members, depth + 1)
+            if stopped:
+                return True
+            continue
+        why = skip_reason(info.filename, head, lambda: data)
+        if why:
+            yield (name, None, f"{why[0]}: {why[1]}")
+            continue
+        try:
+            yield (name, extract(data, os.path.basename(name)), None)
+        except UnsupportedFormat as exc:
+            yield (name, None, str(exc))
+        except Exception as exc:                  # noqa: BLE001
+            # One malformed member must not abort the whole archive.
+            yield (name, None, f"{type(exc).__name__}: {exc}")
+    return False

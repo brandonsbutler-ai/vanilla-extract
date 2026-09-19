@@ -46,6 +46,13 @@ MAX_COMPRESSION_RATIO = 200
 MAX_PDF_STREAM_BYTES = 64 * 1024 * 1024     # 64 MB
 
 
+# A zip inside a zip is read, and so is a zip inside that -- to this depth.
+# Real deliveries nest two or three levels; past this it is a construction
+# meant to exhaust the reader, and every level still spends from the one
+# archive budget above. Beyond it the member is reported, never dropped.
+MAX_ARCHIVE_DEPTH = 8
+
+
 class ArchiveTooLarge(Exception):
     """An archive member exceeded a size or compression-ratio limit.
 
