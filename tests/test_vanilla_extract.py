@@ -692,6 +692,14 @@ class TestRecognize(unittest.TestCase):
         pairs = label_values("Summary\nTerms    Net 30\n")
         self.assertEqual(pairs, {"terms": "Net 30"})
 
+    def test_columns_are_ordered_by_support_then_first_appearance(self):
+        """The order the README documents, so it cannot drift silently."""
+        from vanilla_extract.recognize import infer_schema
+        docs = ["Zeta: 1\nAlpha: 2\n", "Alpha: 3\nZeta: 4\nMid: 5\n",
+                "Mid: 6\nAlpha: 7\n", "Beta: 8\nZeta: 9\n"]
+        self.assertEqual([f["label"] for f in infer_schema(docs)],
+                         ["zeta", "alpha", "mid"])
+
     def test_page_furniture_and_http_verbs_are_not_columns(self):
         """A footer ("Acme Corp  |  Confidential" on every page) and an API
         reference's GET / POST lines were proposed as fields. A value that is

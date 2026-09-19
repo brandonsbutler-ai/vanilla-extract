@@ -80,6 +80,11 @@ before, and for which the scorer has no planted truth. Every one of the ten is t
 document states; scored against those documents too, precision is 1.000. On three real
 deliveries of technical documents the change proposed no new columns.
 
+Recognized columns come after `file` and `characters`, ordered by how many documents carry the
+label, most first; labels carried by the same number of documents keep the order in which the
+walk first met them. That order moves whenever the corpus or the recognizer changes -- it did
+between releases -- so read the CSV by its header, never by column position.
+
 Two kinds of line are never proposed as columns. A label whose value is the same in nine of ten
 documents carrying it (once at least five do) is boilerplate -- a page footer such as
 `Acme Corp  |  Confidential`, a template placeholder -- because a column that says the same
@@ -521,7 +526,7 @@ Every option the command accepts. `--help` prints the same list.
 Two layers, both runnable:
 
 ```bash
-python3 -m unittest discover -s tests -v     # 180 unit tests
+python3 -m unittest discover -s tests -v     # 181 unit tests
 python3 verify_e2e.py                        # 188 end-to-end claim checks
 ```
 
@@ -541,7 +546,7 @@ figures here are whatever it last measured, not what would read best.
 python3 -m unittest discover -s tests -v
 ```
 
-180 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
+181 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
 there is nothing opaque in the repo. The suite covers the cases that actually break extractors:
 balanced parens inside PDF strings, escaped close-parens, octal escapes, odd hex nibbles,
 RTF `\fonttbl` contents leaking into output, cp1252 fallback, and misnamed files -- plus the
