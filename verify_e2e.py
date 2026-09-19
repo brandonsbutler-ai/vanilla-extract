@@ -1580,6 +1580,27 @@ def verify_readme_examples(workdir):
         if r.returncode != 0:
             failed.append(f"rc={r.returncode}: {command.splitlines()[0]} ... "
                           f"{r.stderr.strip()[-200:]}")
+    # The README's --field example has to find the RIGHT value, not just run.
+    # Fields match case-insensitively, so `Invoice\s*#?\s*([A-Z0-9-]+)` read
+    # "INVOICE\nInvoice Number" as the heading followed by the id "Invoice" --
+    # on 51 of 57 real rows -- and exited 0.
+    import shlex
+    example = next((c for c in runnable if "--field" in c), "")
+    specs = [a for a in shlex.split(example.replace("\\\n", " "))
+             if "=" in a and not a.startswith("-")]
+    from vanilla_extract.batch import Field
+    fields = {}
+    for spec in specs:
+        f = Field.parse(spec)
+        fields[f.name] = f
+    ref, amount = rid("INV"), rmoney()
+    invoice = (f"INVOICE\nInvoice Number: {ref}\nInvoice Date: {rdate()}\n"
+               f"Customer: {rcompany()}\nTotal: ${amount}\n")
+    got = {name: f.find(invoice) for name, f in fields.items()}
+    check("the README's --field example pulls the right values from an invoice "
+          f"({ref}, {amount})",
+          got.get("invoice_no") == ref and got.get("total") == amount, got)
+
     check(f"each README command runs through bash as written and exits 0 "
           f"({len(runnable) - len(failed)}/{len(runnable)})",
           bool(runnable) and not failed, "\n".join(failed))

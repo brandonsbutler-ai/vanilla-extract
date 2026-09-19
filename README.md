@@ -25,9 +25,14 @@ text = extract_file("statement.pdf")
 
 ```bash
 vanilla --batch invoices/ --csv results.csv --exceptions skipped.csv \
-    --field 'invoice_no=Invoice\s*#?\s*([A-Z0-9-]+)' \
+    --field 'invoice_no=Invoice\s*(?:Number|No\.?|#)\s*:?\s*([A-Z]+-[0-9]+)' \
     --field 'total=Total\s*:?\s*\$?([0-9,]+\.[0-9]{2})'
 ```
+
+Patterns match **case-insensitively** (`re.IGNORECASE`), so `[A-Z]` matches lowercase letters too
+and a bare `Invoice\s*#?\s*([A-Z0-9-]+)` happily captures the word "Invoice" from the line under an
+`INVOICE` heading. Anchor a pattern on the words around the value, as above, and use `(?-i:...)`
+for a part that must match case exactly.
 
 Quote each `--field` in **single** quotes. Inside double quotes bash rewrites `\$` to `$` before the
 pattern arrives, and the regex no longer means what was typed. A pattern that will not compile is
@@ -501,7 +506,7 @@ Two layers, both runnable:
 
 ```bash
 python3 -m unittest discover -s tests -v     # 157 unit tests
-python3 verify_e2e.py                        # 186 end-to-end claim checks
+python3 verify_e2e.py                        # 187 end-to-end claim checks
 ```
 
 `verify_e2e.py` exists because unit tests check units, not promises. It generates a fresh corpus
