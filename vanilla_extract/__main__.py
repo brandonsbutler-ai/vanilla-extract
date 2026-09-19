@@ -92,6 +92,13 @@ def _run_batch(args):
     except (ValueError, re.error) as exc:
         print(f"vanilla: {exc}", file=sys.stderr)
         return 2
+    # A mistyped folder is a mistake in the command, not an unreadable
+    # document: it used to produce an empty spreadsheet and exit 0.
+    missing = [p for p in args.paths if not os.path.exists(p)]
+    if missing:
+        for p in missing:
+            print(f"vanilla: {p}: no such file or folder", file=sys.stderr)
+        return 2
 
     ws = None
     if args.workspace:

@@ -483,6 +483,19 @@ class TestBatch(unittest.TestCase):
         # One document, so no banner: an archive walk would print one per part.
         self.assertEqual(out.getvalue().strip(), "Invoice Number: INV-77")
 
+    def test_a_mistyped_batch_folder_fails_instead_of_writing_an_empty_table(self):
+        import contextlib
+        from vanilla_extract.__main__ import main
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        out = os.path.join(d, "results.csv")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            rc = main(["--batch", os.path.join(d, "invoces"), "--csv", out])
+        self.assertEqual(rc, 2)
+        self.assertIn("invoces: no such file or folder", err.getvalue())
+        self.assertFalse(os.path.exists(out), "an empty spreadsheet was written")
+
     def test_write_csv_emits_header_even_when_empty(self):
         import tempfile
         from vanilla_extract.batch import write_csv
