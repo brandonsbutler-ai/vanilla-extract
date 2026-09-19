@@ -1167,8 +1167,14 @@ def verify_packaging_and_deps(workdir):
     check("package version agrees with pyproject",
           project_cfg.get("version") == __version__,
           f"{project_cfg.get('version')} vs {__version__}")
-    check("Linux install script present and executable",
-          os.access(os.path.join(ROOT, "packaging", "install-linux.sh"), os.X_OK))
+    # Both scripts, as a clone delivers them. The mode lives in git's index, and
+    # on a checkout with core.fileMode=false (an NTFS mount) a lost +x bit is
+    # invisible locally -- a fresh clone got 0644 and this suite died with a
+    # PermissionError traceback instead of saying so.
+    not_exec = [n for n in ("install-linux.sh", "uninstall-linux.sh")
+                if not os.access(os.path.join(ROOT, "packaging", n), os.X_OK)]
+    check("Linux install and uninstall scripts present and executable",
+          not not_exec, f"not executable: {not_exec}" if not_exec else "")
     check("Windows installer script present",
           os.path.isfile(os.path.join(ROOT, "packaging", "vanilla-extract.iss")))
     check("standalone build script present",
@@ -1177,8 +1183,11 @@ def verify_packaging_and_deps(workdir):
     # actually install to a temp prefix and run the installed command
     prefix = os.path.join(workdir, "prefix")
     env = dict(os.environ, PREFIX=prefix)
-    r = subprocess.run([os.path.join(ROOT, "packaging", "install-linux.sh")],
-                       cwd=ROOT, capture_output=True, text=True, env=env, timeout=120)
+    try:
+        r = subprocess.run([os.path.join(ROOT, "packaging", "install-linux.sh")],
+                           cwd=ROOT, capture_output=True, text=True, env=env, timeout=120)
+    except OSError as exc:           # not executable: a failed claim, not a crash
+        r = subprocess.CompletedProcess([], 126, "", f"{type(exc).__name__}: {exc}")
     # Derived from the declared console script, not hardcoded. The previous
     # version named the binary independently, so when a blanket rename changed
     # what the installer produced, this check changed with it and passed while
@@ -1206,6 +1215,11 @@ def verify_packaging_and_deps(workdir):
               r.returncode == 0 and __version__ in r.stdout, r.stdout.strip() or r.stderr[:160])
         check("installed version matches pyproject",
               f'version = "{__version__}"' in pyproject, __version__)
+    else:
+        # Counted as failed, not skipped, so the total the docs quote holds.
+        check("installed command runs from an unrelated directory and reports its version",
+              False, "nothing was installed")
+        check("installed version matches pyproject", False, "nothing was installed")
 
 
 def verify_unit_suite():
