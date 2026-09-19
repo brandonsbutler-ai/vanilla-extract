@@ -2224,6 +2224,76 @@ class TestImportCsvInput(unittest.TestCase):
         self.assertNotIn("Traceback", err)
 
 
+class TestSmallThingsFromTheJourney(unittest.TestCase):
+    """The cheap, clearly-right nits from the end-to-end review."""
+
+    def _cli(self, *argv):
+        import contextlib
+        from vanilla_extract.__main__ import main
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = main(list(argv))
+        return rc, out.getvalue(), err.getvalue()
+
+    def test_a_folder_without_batch_says_to_use_batch(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        rc, _out, err = self._cli(d)
+        self.assertEqual(rc, 1)
+        self.assertIn("is a folder", err)
+        self.assertIn("--batch", err)
+        self.assertNotIn("IsADirectoryError", err)
+
+    def test_reimporting_an_unchanged_table_files_no_empty_revision(self):
+        from vanilla_extract.batch import run, write_csv
+        from vanilla_extract.provenance import Workspace
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        src = os.path.join(d, "src")
+        os.makedirs(src)
+        with open(os.path.join(src, "a.txt"), "w") as fh:
+            fh.write("Total: $5.00\n")
+        ws = Workspace(os.path.join(d, "ws"))
+        ws.create("test", [src])
+        results, _ = run([src], workspace=ws)
+        ws.add_revision(results, ["file", "characters"], note="as extracted")
+        table = os.path.join(d, "same.csv")
+        write_csv(results, table, ["file", "characters"])
+        rc, out, err = self._cli("--workspace", ws.root, "--import-csv", table)
+        self.assertEqual(rc, 0, err)
+        self.assertIn("nothing filed", out)
+        self.assertEqual(len(ws.load()["revisions"]), 1)
+
+    def test_a_duplicate_member_keeps_its_extension(self):
+        from vanilla_extract.provenance import _safe_member
+        name = _safe_member("/x/bundle.zip!dup.txt#2")
+        self.assertTrue(name.startswith("dup_2_"), name)
+        self.assertTrue(name.endswith(".txt"), name)
+
+    def test_a_columns_example_is_a_value_of_the_columns_type(self):
+        from vanilla_extract.recognize import infer_schema
+        docs = ["Invoice Date: 2026-07-06\n"] + [f"Invoice Date: 07/0{i}/2026\n" for i in range(1, 5)]
+        field, = infer_schema(docs)
+        self.assertEqual(field["kind"], "date_us")
+        self.assertEqual(field["example"], "07/01/2026")
+
+    def test_the_linux_uninstaller_leaves_no_empty_folders_behind(self):
+        if shutil.which("bash") is None:
+            self.skipTest("no bash")
+        import subprocess
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        prefix = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, prefix, True)
+        os.makedirs(os.path.join(prefix, "share"))        # something already there
+        before = sorted(os.listdir(prefix))
+        env = dict(os.environ, PREFIX=prefix)
+        for script in ("install-linux.sh", "uninstall-linux.sh"):
+            r = subprocess.run(["bash", os.path.join(root, "packaging", script)],
+                               env=env, capture_output=True, text=True, timeout=120)
+            self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(sorted(os.listdir(prefix)), before)
+
+
 def _chromium():
     """A headless Chromium through Playwright, or None where it is not installed.
 

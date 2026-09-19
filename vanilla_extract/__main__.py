@@ -74,7 +74,12 @@ def _run_workspace_op(args):
             print(f"vanilla: {args.import_csv} is not UTF-8; read it as "
                   f"{encoding} (Windows-1252, Excel's plain CSV)", file=sys.stderr)
         entry = ws.add_revision(rows, columns,
-                                note=f"imported from {os.path.basename(args.import_csv)}")
+                                note=f"imported from {os.path.basename(args.import_csv)}",
+                                skip_if_unchanged=True)
+        if entry is None:
+            print(f"no cell changed from revision {len(ws.load()['revisions'])}; "
+                  f"nothing filed")
+            return 0
         print(f"revision {entry['revision']}: {entry['rows']} rows, "
               f"{entry['change_count']} cell(s) changed from the previous revision")
         for change in entry["changes_from_previous"][:20]:
@@ -270,6 +275,11 @@ def main(argv=None):
     for path in args.paths:
         if not os.path.exists(path):
             print(f"vanilla: {path}: no such file", file=sys.stderr)
+            failed = True
+            continue
+        if os.path.isdir(path):
+            print(f"vanilla: {path}: is a folder; use --batch to read a folder",
+                  file=sys.stderr)
             failed = True
             continue
         try:

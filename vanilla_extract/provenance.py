@@ -30,6 +30,7 @@ import datetime
 import hashlib
 import json
 import os
+import re
 import shutil
 
 from .batch import csv_safe
@@ -76,14 +77,21 @@ def _safe_member(name, content_hash=None):
     cleaned = name.replace("\\", "/").replace("!", "/")
     parts = [p for p in cleaned.split("/") if p not in ("", ".", "..")]
     base = parts[-1] if parts else "document"
+    # batch labels the second of two same-named archive members "dup.txt#2".
+    # Sanitised as-is that became "dup.txt_2" -- an extension nothing opens --
+    # so the number moves onto the stem: "dup_2".
+    dup = re.fullmatch(r"(.+)#(\d+)", base)
+    number = ""
+    if dup:
+        base, number = dup.group(1), f"_{dup.group(2)}"
     base = "".join(c if (c.isalnum() or c in "._- ") else "_" for c in base).strip()
     base = base or "document"
     digest = (content_hash
               or hashlib.sha256(name.encode("utf-8")).hexdigest())[:8]
     stem, dot, ext = base.rpartition(".")
     if dot and len(ext) <= 8:
-        return f"{stem[:120]}_{digest}.{ext}"
-    return f"{base[:120]}_{digest}"
+        return f"{stem[:120]}{number}_{digest}.{ext}"
+    return f"{base[:120]}{number}_{digest}"
 
 
 class Workspace:
@@ -198,13 +206,21 @@ class Workspace:
         return None
 
     # -- revisions ---------------------------------------------------------
-    def add_revision(self, rows, columns, note="", key="file"):
+    def add_revision(self, rows, columns, note="", key="file", skip_if_unchanged=False):
         """Append a corrected table and record its diff against the previous one.
 
         Never replaces anything. Revision N+1 states what it changed relative to
         revision N, so the chain from extraction to delivery stays readable.
+
+        With `skip_if_unchanged`, a table identical to the previous revision is
+        not filed and None is returned: re-importing the same CSV used to add
+        an empty revision to the record every time.
         """
         manifest = self.load()
+        previous = self._previous_rows(manifest, key)
+        changes = _diff_rows(previous, rows, columns, key) if previous is not None else []
+        if skip_if_unchanged and previous is not None and not changes:
+            return None
         number = len(manifest["revisions"]) + 1
         name = f"revision_{number:03d}.csv"
         path = os.path.join(self.revisions, name)
@@ -214,9 +230,6 @@ class Workspace:
             writer.writeheader()
             for row in rows:
                 writer.writerow({k: csv_safe(v) for k, v in row.items()})
-
-        previous = self._previous_rows(manifest, key)
-        changes = _diff_rows(previous, rows, columns, key) if previous is not None else []
 
         entry = {
             "revision": number,

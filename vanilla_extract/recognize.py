@@ -243,7 +243,9 @@ def infer_schema(texts, min_support=0.5, max_fields=25):
             counts[label] += 1
             kinds[label][classify(value)] += 1
             values[label][value] += 1
-            examples.setdefault(label, value)
+            # One example per type, so the example shown is of the type the
+            # column is given: a column typed date_us used to show 2026-07-06.
+            examples.setdefault((label, classify(value)), value)
 
     total = len(texts)
     proposed = []
@@ -259,7 +261,7 @@ def infer_schema(texts, min_support=0.5, max_fields=25):
             "support": count,
             "ratio": round(ratio, 3),
             "kind": kinds[label].most_common(1)[0][0],
-            "example": examples[label],
+            "example": examples[(label, kinds[label].most_common(1)[0][0])],
         })
         if len(proposed) >= max_fields:
             break
