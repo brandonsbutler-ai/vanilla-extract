@@ -166,11 +166,13 @@ document.querySelectorAll('.view').forEach(btn=>{
 });
 document.getElementById('dlgclose')?.addEventListener('click',()=>dlg.close());
 
+// batch._NEGATIVE_NUMBER: a plain negative amount is data, not a formula.
+const NEGATIVE_NUMBER = /^-[$£€]?(?:\\d{1,3}(?:,\\d{3})+|\\d+)(?:\\.\\d+)?%?$/;
 function csvCell(s){
   s = (s ?? '').toString();
   // Same formula-injection guard the Python writer applies: a cell starting
   // = + - @ tab or CR is evaluated by Excel and Sheets.
-  if(/^[=+\\-@\\t\\r]/.test(s)) s = "'" + s;
+  if(/^[=+\\-@\\t\\r]/.test(s) && !NEGATIVE_NUMBER.test(s)) s = "'" + s;
   return /[",\\n]/.test(s) ? '"' + s.replace(/"/g,'""') + '"' : s;
 }
 document.getElementById('export')?.addEventListener('click',()=>{
@@ -382,9 +384,10 @@ document.getElementById('export').addEventListener('click', () => {
   URL.revokeObjectURL(a.href);
 });
 
+const NEGATIVE_NUMBER = /^-[$£€]?(?:\\d{1,3}(?:,\\d{3})+|\\d+)(?:\\.\\d+)?%?$/;
 function csvCell(s){
   s = (s ?? '').toString();
-  if(/^[=+\\-@\\t\\r]/.test(s)) s = "'" + s;
+  if(/^[=+\\-@\\t\\r]/.test(s) && !NEGATIVE_NUMBER.test(s)) s = "'" + s;
   return /[",\\n]/.test(s) ? '"' + s.replace(/"/g,'""') + '"' : s;
 }
 """

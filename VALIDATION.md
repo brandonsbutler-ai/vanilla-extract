@@ -253,7 +253,7 @@ definition. These were tested, not assumed:
 | XXE (external entity) | Not exploitable. Verified against `file:///etc/passwd`. |
 | Billion laughs | Bounded by the XML parser a few levels in. Amplification, not denial of service; a document whose XML trips the limit is reported as `limit_exceeded`. |
 | Catastrophic backtracking | **Three patterns were quadratic and are fixed.** See *What an audit of the patterns found* below. Every regex in the package is now measured for growth rather than asserted to be linear. |
-| Spreadsheet formula injection | **Neutralized.** A document containing `=cmd\|' /C calc'!A0` would otherwise execute when the client opened the CSV. Cells leading with `= + - @` tab or CR are prefixed, in both the file writer and the report's in-browser export. |
+| Spreadsheet formula injection | **Neutralized.** A document containing `=cmd\|' /C calc'!A0` would otherwise execute when the client opened the CSV. Cells leading with `= + - @` tab or CR are prefixed, in both the file writer and the report's in-browser export, except a cell that is in full a plain negative number, amount or percentage (`-$251.00`), which stays a number. |
 | Script injection into the report | **Fixed.** `</script>` inside a document's text closed the report's data block. Now escaped. |
 | Path traversal | A source label containing `../` or an absolute path cannot escape a workspace. |
 
@@ -359,7 +359,7 @@ Every one of those is now a named regression test.
 git clone https://github.com/brandonsbutler-ai/vanilla-extract
 cd vanilla_extract
 
-python3 -m unittest discover -s tests -v    # 144 unit tests
+python3 -m unittest discover -s tests -v    # 147 unit tests
 python3 verify_e2e.py                       # 186 end-to-end claim checks
 python3 benchmark.py /path/to/your/pdfs     # quality against pdftotext
 ```

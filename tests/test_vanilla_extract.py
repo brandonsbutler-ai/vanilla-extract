@@ -1314,6 +1314,20 @@ class TestReviewRegressions(unittest.TestCase):
             values = [r["v"] for r in _csv.DictReader(open(path, encoding="utf-8"))]
         self.assertTrue(all(v.startswith("'") for v in values))
 
+    def test_negative_money_and_percent_stay_numbers(self):
+        """The guard prefixed every cell starting '-', so -$251.00 and -4.5%
+        reached Excel as text: a column that will not sum."""
+        from vanilla_extract.batch import csv_safe
+        for value in ("-$251.00", "-4.5%", "-12", "-1,204.55", "-£3.10", "-0.5"):
+            self.assertEqual(csv_safe(value), value, value)
+
+    def test_formula_payloads_starting_with_a_minus_are_still_neutralized(self):
+        from vanilla_extract.batch import csv_safe
+        for value in ("-2+3+cmd|' /C calc'!A0", "-1+1", "-SUM(A1)", "- 5",
+                      "-$251.00+cmd|' /C calc'!A0", "=1+1", "+1", "@SUM(1)",
+                      "-4.5%\n=cmd", "\t-1"):
+            self.assertTrue(csv_safe(value).startswith("'"), value)
+
     def test_csv_with_an_enormous_field_still_returns_something(self):
         """#9 -- csv.Error escaped and lost the file entirely."""
         blob = "x" * 200000
@@ -2116,6 +2130,15 @@ class TestReviewPageInABrowser(unittest.TestCase):
         page.reload()
         cell = page.locator("#results tr").first.locator("td[contenteditable]").first
         self.assertEqual(cell.inner_text().strip(), "$1.00")
+
+    def test_export_keeps_a_negative_amount_a_number(self):
+        page = self.ctx.new_page()
+        page.goto(self._report())
+        self._edit(page, "-$251.00")
+        self._edit(page, "-2+3+cmd|' /C calc'!A0", row=1)
+        rows = self._export(page)
+        self.assertEqual([r["total"] for r in rows],
+                         ["-$251.00", "'-2+3+cmd|' /C calc'!A0"])
 
     def test_the_page_works_when_storage_throws(self):
         """Private windows and locked-down browsers refuse localStorage."""

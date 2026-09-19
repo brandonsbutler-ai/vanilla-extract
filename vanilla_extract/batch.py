@@ -449,6 +449,13 @@ def run(paths, fields=None, include_text=True, max_text=None, auto_labels=None,
 
 _FORMULA_LEAD = ("=", "+", "-", "@", "\t", "\r")
 
+# A plain negative number, amount or percentage is data, not a formula, and
+# prefixing it turned -$251.00 and -4.5% into text a spreadsheet will not sum.
+# The match is a FULL match on a strict shape, so anything with an operator,
+# a letter, a space or a line break after the minus is still neutralized.
+# report.py's export applies the same pattern in the browser.
+_NEGATIVE_NUMBER = re.compile(r"-[$£€]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?%?")
+
 
 def csv_safe(value):
     r"""Neutralize spreadsheet formula injection in an extracted value.
@@ -461,7 +468,9 @@ def csv_safe(value):
     value still reads correctly, it just is not evaluated.
     """
     text = "" if value is None else str(value)
-    return "'" + text if text.startswith(_FORMULA_LEAD) else text
+    if text.startswith(_FORMULA_LEAD) and not _NEGATIVE_NUMBER.fullmatch(text):
+        return "'" + text
+    return text
 
 
 def write_csv(rows, path, columns=None):
