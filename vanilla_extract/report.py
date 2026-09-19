@@ -92,8 +92,9 @@ _JS = """
 const DOCS = __DOCS__;
 // A file:// page cannot write itself, so corrections live in this TAB until
 // they are exported or the tab closes. sessionStorage, not localStorage: it
-// survives a reload, but not a browser restart, and no other tab or page can
-// read it -- a delivery's corrections do not linger on the machine. Leaving
+// survives a reload, but not a browser restart, and no other tab can read it
+// (another local page opened in this same tab can) -- a delivery's
+// corrections do not linger on the machine. Leaving
 // with unexported edits asks first, and a successful export empties the
 // store. The key carries this report's content hash and a random nonce drawn
 // when it was generated, so two reports can never share one. Storage may also

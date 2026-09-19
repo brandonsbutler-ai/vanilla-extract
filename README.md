@@ -71,13 +71,15 @@ because a pattern that fires on the wrong thing costs more than one that stays q
 Label-on-its-own-line is the ambiguous form: `Customer` above `Contoso Ltd` is two short
 capitalised lines, and one document cannot say which is the label. The corpus can. A label that
 other documents state plainly (`Customer: Fabrikam Inc`) is read above a value that looks like a
-label; a line that merely recurs, as headings do, is not treated as one. Measured on the synthetic
-invoice corpus built for an end-to-end review (60 files, 312 planted values), by that review's own
-scorer (`score.py`): recall on the three stacked-layout fields went from 0.577 to 1.000, and overall
+label; a line that merely recurs, as headings do, is not treated as one. How much that
+helps was measured by an external review, and this repository does not reproduce it: the review
+built a synthetic corpus of 60 files with 312 planted values, and its builder (which needs fpdf2,
+Pillow, LibreOffice, Ghostscript and a system font) and scorer are not included here. By that
+review's scorer, recall on each of the three stacked-layout fields went from 0.577 to 1.000, and overall
 recall from 0.788 to 1.000. The same scorer puts precision at 0.992 before and 0.969 after -- the
 difference is ten values read from a zip nested inside a zip, which is now opened and was not
 before, and for which the scorer has no planted truth. Every one of the ten is the value its
-document states; scored against those documents too, precision is 1.000. On three real
+document states; with truth added for them, precision is 1.000. On three real
 deliveries of technical documents the change proposed no new columns.
 
 Recognized columns come after `file` and `characters`, ordered by how many documents carry the
@@ -108,7 +110,7 @@ JSON file into a 155 MB report that took over ten seconds to open; the same deli
 **Export is the save.** Edits live in this tab until you export them or close the tab; nothing is
 saved to disk or uploaded. A page opened from disk cannot write itself, so the corrections are kept
 in the tab's session storage: they survive a reload, but not closing the tab or restarting the
-browser, and no other tab or page can read them. The store is keyed to that one report (its content
+browser, and no other tab can read them -- though another local page opened in the same tab can. The store is keyed to that one report (its content
 and a random value drawn when it was generated), a successful export empties it, and reloading or
 closing the tab with unexported corrections asks first.
 
