@@ -1373,7 +1373,38 @@ class TestReviewRegressions(unittest.TestCase):
         doc = (b"%PDF-1.4\n1 0 obj\n<< /Filter /FlateDecode /Length "
                + str(len(stream)).encode() + b" >>\nstream\n" + stream
                + b"\nendstream\nendobj\n%%EOF\n")
-        pdf.extract_pdf(doc)          # must return, not exhaust memory
+        # must stop at the cap, not exhaust memory -- and since the cap was
+        # hit, it is refused rather than returned truncated
+        from vanilla_extract.limits import StreamTooLarge
+        with self.assertRaises(StreamTooLarge):
+            pdf.extract_pdf(doc)
+
+    def test_a_pdf_decompression_bomb_is_refused_and_reported(self):
+        """The README said "Refused". It was truncated silently: a 1 MB file
+        came back as its first 64 MB, took 12.5 s -- the time goes on walking
+        64 MB of inflated whitespace byte by byte -- and exited 0."""
+        import time
+        import zlib
+        from unittest import mock
+        from vanilla_extract import limits
+        from vanilla_extract.batch import run
+        cap = 1024 * 1024
+        stream = zlib.compress(b"BT (Hello bomb) Tj ET\n" + b" " * (cap * 3))
+        doc = (b"%PDF-1.4\n1 0 obj\n<< /Filter /FlateDecode /Length "
+               + str(len(stream)).encode() + b" >>\nstream\n" + stream
+               + b"\nendstream\nendobj\n%%EOF\n")
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        with open(os.path.join(d, "bomb.pdf"), "wb") as fh:
+            fh.write(doc)
+        with mock.patch.object(limits, "MAX_PDF_STREAM_BYTES", cap):
+            start = time.time()
+            results, exceptions = run([d])
+            took = time.time() - start
+        self.assertEqual(results, [])
+        self.assertEqual([e["reason"] for e in exceptions], ["limit_exceeded"])
+        self.assertIn("MB", exceptions[0]["detail"])
+        self.assertLess(took, 1.0)
 
     def test_odd_length_hex_does_not_disable_every_font(self):
         """#6 -- one malformed CMap entry made a whole readable PDF 'undecodable'."""

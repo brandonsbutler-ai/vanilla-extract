@@ -26,7 +26,7 @@ import re
 import zlib
 
 from . import pdfcmap
-from ..limits import bounded_inflate
+from ..limits import StreamTooLarge, bounded_inflate
 
 
 # Thresholds for the coverage guard below. Both must trip: measured across 53
@@ -109,8 +109,13 @@ def _decompress(header, raw):
         if data is None:
             return None
         if truncated:
-            # Keep what fits; a bomb contributes its first 128 MB and no more.
-            return data
+            # Refused, not truncated. Keeping what fit looked like a result:
+            # a 1 MB bomb came back as 64 MB of mostly whitespace, exit 0,
+            # after 12.5 s of tokenizing it.
+            raise StreamTooLarge(
+                f"a content stream inflates past the "
+                f"{len(data) // (1024 * 1024)} MB per-stream limit: a "
+                f"decompression bomb rather than a document")
         return data
     if b"/Filter" in header:
         # DCTDecode (JPEG), CCITTFax, JBIG2, LZW and friends: not text we can

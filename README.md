@@ -412,7 +412,7 @@ These were tested, not assumed:
 | **Catastrophic backtracking** | **Three patterns were quadratic; all three are fixed.** A run of uppercase hyphenated text with no digit took 8.8 s at 64 KB, a run of email-legal characters with no `@` took 1.2 s, and a run of spaces with no newline took 1.9 s inside the RTF cleanup. Each walked the whole run, failed, and restarted one character later. The earlier claim that all of them were linear was tested against inputs that contained a digit, an `@` and a newline -- so every pattern completed and nothing backtracked. Every regex in the package is now measured by doubling the input and comparing the times; the check fails above 3x per doubling, and no exponential case has been found. |
 | **CSV formula injection** | **Neutralized.** Extracted text went verbatim into a CSV the client opens in Excel, so a document containing `=cmd\|' /C calc'!A0` was a path to code execution on the reviewer's machine. Cells beginning `= + - @` tab or CR are now prefixed, in the Python writer and in the report's in-browser export -- except a cell that is, in full, a plain negative number, amount or percentage (`-$251.00`, `-4.5%`), which stays a number the spreadsheet can sum. `-2+3+cmd\|' /C calc'!A0` is still prefixed. |
 | **XSS via the report** | **Fixed.** `json.dumps` does not escape `</script>`, so a document containing it closed the report's data block and the rest parsed as markup -- executing attacker script in a browser holding the client's entire delivery. `<`, `>`, `&`, U+2028 and U+2029 are now escaped in the embedded JSON. |
-| **PDF decompression bomb** | **Refused.** A 597 KB PDF expanded one Flate stream to 616 MB. Inflation is now bounded; peak stays near 128 MB. |
+| **PDF decompression bomb** | **Refused.** A 597 KB PDF expanded one Flate stream to 616 MB. Inflation is now bounded; peak stays near 128 MB. A stream that reaches the 64 MB bound raises `StreamTooLarge` and the document is reported as `limit_exceeded`. It used to be truncated instead -- the first 64 MB kept, exit 0 -- and a 1 MB bomb took 12.5 s, spent tokenizing 64 MB of inflated padding; refused, it takes 0.3 s. |
 | **Path traversal** | A source label containing `../` or an absolute path cannot escape a workspace; archived names are flattened to a basename plus a digest. |
 
 Limits are generous on purpose -- a real 300-page report is large and legitimate. The point is to
@@ -505,8 +505,8 @@ Every option the command accepts. `--help` prints the same list.
 Two layers, both runnable:
 
 ```bash
-python3 -m unittest discover -s tests -v     # 157 unit tests
-python3 verify_e2e.py                        # 187 end-to-end claim checks
+python3 -m unittest discover -s tests -v     # 158 unit tests
+python3 verify_e2e.py                        # 188 end-to-end claim checks
 ```
 
 `verify_e2e.py` exists because unit tests check units, not promises. It generates a fresh corpus
@@ -525,7 +525,7 @@ figures here are whatever it last measured, not what would read best.
 python3 -m unittest discover -s tests -v
 ```
 
-157 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
+158 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
 there is nothing opaque in the repo. The suite covers the cases that actually break extractors:
 balanced parens inside PDF strings, escaped close-parens, octal escapes, odd hex nibbles,
 RTF `\fonttbl` contents leaking into output, cp1252 fallback, and misnamed files -- plus the

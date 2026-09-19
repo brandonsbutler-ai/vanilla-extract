@@ -26,7 +26,8 @@ import zipfile
 from . import UnsupportedFormat, extract, extract_file
 from . import dispatch, fileinfo, recognize
 from .dispatch import explain_empty, skip_reason, zip_holds_document
-from .limits import MAX_ARCHIVE_DEPTH, ArchiveTooLarge, Budget, read_member
+from .limits import (MAX_ARCHIVE_DEPTH, ArchiveTooLarge, Budget, StreamTooLarge,
+                     read_member)
 
 # One decompression budget per archive, so the 1 GB whole-archive cap that
 # limits.py documents actually applies in batch mode. Without it only the
@@ -378,6 +379,12 @@ def run(paths, fields=None, include_text=True, max_text=None, auto_labels=None,
                 _record(datasheet, meta, None, "unsupported_format")
                 _archive_failure(workspace, label, meta, source, "unsupported_format")
                 exceptions.append({"file": label, "reason": "unsupported_format",
+                                   "detail": str(exc)})
+                continue
+            except StreamTooLarge as exc:
+                _record(datasheet, meta, None, "limit_exceeded")
+                _archive_failure(workspace, label, meta, source, "limit_exceeded")
+                exceptions.append({"file": label, "reason": "limit_exceeded",
                                    "detail": str(exc)})
                 continue
             except ArchiveTooLarge as exc:

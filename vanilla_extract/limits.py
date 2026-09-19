@@ -60,6 +60,15 @@ class ArchiveTooLarge(Exception):
     """
 
 
+class StreamTooLarge(Exception):
+    """A compressed stream inflates past its ceiling: a decompression bomb.
+
+    Refused rather than truncated. Keeping the first 64 MB used to look like a
+    result -- exit 0 -- and cost 12.5 s of walking inflated whitespace for a
+    1 MB file.
+    """
+
+
 def bounded_inflate(raw, limit=None):
     """zlib-inflate `raw`, refusing to produce more than `limit` bytes.
 

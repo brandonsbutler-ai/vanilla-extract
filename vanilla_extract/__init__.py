@@ -17,11 +17,13 @@ import zipfile
 
 from .dispatch import (NoTextFound, UnsupportedFormat, explain_empty, extract,
                        skip_reason, sniff, zip_holds_document)
-from .limits import MAX_ARCHIVE_DEPTH, ArchiveTooLarge, Budget, read_member
+from .limits import (MAX_ARCHIVE_DEPTH, ArchiveTooLarge, Budget, StreamTooLarge,
+                     read_member)
 
 __version__ = "0.2.0"
 __all__ = ["extract", "extract_file", "extract_archive", "sniff", "explain_empty",
-           "UnsupportedFormat", "NoTextFound", "ArchiveTooLarge", "__version__"]
+           "UnsupportedFormat", "NoTextFound", "ArchiveTooLarge", "StreamTooLarge",
+           "__version__"]
 
 def extract_file(path, require_text=False):
     """Extract text from a file on disk.

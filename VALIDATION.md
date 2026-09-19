@@ -140,7 +140,7 @@ Three layers, because they catch different things.
 |---|---|---|
 | **Unit tests** (119) | `python3 -m unittest discover -s tests` | Logic errors in one function, and every past bug as a regression test |
 | **Benchmark** | `python3 benchmark.py <dir>` | Extraction *quality*, scored against an independent implementation |
-| **End-to-end verification** (187 checks) | `python3 verify_e2e.py` | Whether the product does what its documentation says |
+| **End-to-end verification** (188 checks) | `python3 verify_e2e.py` | Whether the product does what its documentation says |
 
 The third layer is the unusual one. Unit tests check units; they cannot tell you the README is
 wrong. `verify_e2e.py` generates a fresh corpus in every supported format, drives the real
@@ -249,7 +249,7 @@ definition. These were tested, not assumed:
 | Attack | Result |
 |---|---|
 | ZIP decompression bomb | **Refused.** Members are vetted against declared size and compression ratio before a byte is read, with a running budget for the archive. A 199 KB file declaring 200 MB is refused in 0.000 s. |
-| PDF decompression bomb | **Refused.** Inflation is bounded; a 597 KB file declaring 600 MB peaks near 128 MB instead of 616 MB. |
+| PDF decompression bomb | **Refused.** Inflation is bounded; a 597 KB file declaring 600 MB peaks near 128 MB instead of 616 MB, and a stream that reaches the bound raises `StreamTooLarge` -- reported as `limit_exceeded` -- rather than being kept truncated. |
 | XXE (external entity) | Not exploitable. Verified against `file:///etc/passwd`. |
 | Billion laughs | Bounded by the XML parser a few levels in. Amplification, not denial of service; a document whose XML trips the limit is reported as `limit_exceeded`. |
 | Catastrophic backtracking | **Three patterns were quadratic and are fixed.** See *What an audit of the patterns found* below. Every regex in the package is now measured for growth rather than asserted to be linear. |
@@ -347,7 +347,7 @@ Every one of those is now a named regression test.
   name for two different fonts on different pages can decode one of them wrong.
 - **Encryption is detected, never bypassed.** This tool will not help you read a document you do
   not have the password for.
-- **187 passing checks means the documented claims hold today, on this machine, for these
+- **188 passing checks means the documented claims hold today, on this machine, for these
   inputs.** It does not mean the tool is free of defects. The review above found 15 after the
   unit tests were green.
 
@@ -359,8 +359,8 @@ Every one of those is now a named regression test.
 git clone https://github.com/brandonsbutler-ai/vanilla-extract
 cd vanilla_extract
 
-python3 -m unittest discover -s tests -v    # 157 unit tests
-python3 verify_e2e.py                       # 187 end-to-end claim checks
+python3 -m unittest discover -s tests -v    # 158 unit tests
+python3 verify_e2e.py                       # 188 end-to-end claim checks
 python3 benchmark.py /path/to/your/pdfs     # quality against pdftotext
 ```
 

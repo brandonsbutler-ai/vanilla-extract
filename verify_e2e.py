@@ -990,9 +990,20 @@ def verify_failure_modes(workdir):
            + str(len(stream)).encode() + b" >>\nstream\n" + stream
            + b"\nendstream\nendobj\n%%EOF\n")
     import resource
+    from vanilla_extract.limits import StreamTooLarge
     before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
-    extract(doc, "pdfbomb.pdf")
+    started = time.time()
+    try:
+        extract(doc, "pdfbomb.pdf")
+        refused = "it returned text"
+    except StreamTooLarge as e:
+        refused = str(e)
+    took = time.time() - started
     after = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+    # "Refused" is what the README says; it used to keep the first 64 MB and
+    # return it, exit 0, after 12.5 s of walking the inflated padding.
+    check("PDF flate bomb is refused, not silently truncated, and quickly",
+          refused != "it returned text" and took < 5, f"{took:.1f} s: {refused[:90]}")
     check("PDF flate bomb stays bounded (peak growth under 3x the cap)",
           (after - before) < 3 * MAX_PDF_STREAM_BYTES / (1024 * 1024) or after < 700,
           f"peak {before:.0f} -> {after:.0f} MB, cap {MAX_PDF_STREAM_BYTES//(1024*1024)} MB")
