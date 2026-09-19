@@ -54,6 +54,34 @@ def make_pdf(text_ops, compress=True):
             stream + b"\nendstream\nendobj\n%%EOF\n")
 
 
+# Growth limits for the "never quadratic" tests. The input grows 8x (8k to 64k),
+# so a linear cost grows about 8x and a quadratic one about 64x; 24 sits well
+# clear of both. Measured on this thread's CPU clock, best of five: wall-clock
+# ratios with a 3x limit per doubling failed 6 of 6 parallel runs on a loaded
+# machine, where CPU time barely moves (worst linear case 9.6 idle, 8.9 loaded).
+GROWTH_SMALL, GROWTH_BIG, GROWTH_LIMIT = 8000, 64000, 24.0
+
+
+def cpu_growth(make, op, reps=5, small=GROWTH_SMALL, big=GROWTH_BIG):
+    """(cost at `big` in CPU seconds, cost ratio big/small) of op(make(n)).
+
+    The input is built outside the timed region, so only `op` is measured.
+    `big` must stay 8x `small` for GROWTH_LIMIT to mean what it says.
+    """
+    import time
+
+    def cost(n):
+        data = make(n)
+        best = float("inf")
+        for _ in range(reps):
+            start = time.thread_time()
+            op(data)
+            best = min(best, time.thread_time() - start)
+        return best
+    small_cost, big_cost = cost(small), cost(big)
+    return big_cost, big_cost / max(small_cost, 1e-6)
+
+
 class Page(HTMLParser):
     """A generated page as an element tree, so tests can ask what it IS.
 
@@ -1097,11 +1125,10 @@ class TestHostileInput(unittest.TestCase):
         seconds on 64 KB, and a run of email-legal characters with no `@`, which
         took 1.2 seconds. Neither was in the corpus.
 
-        Doubling the input doubles a linear pattern's time and quadruples a
-        quadratic one, so the ratio is the assertion. The absolute times are
-        left out of it: those move with the machine, the ratio does not.
+        Growing the input 8x grows a linear pattern's cost about 8x and a
+        quadratic one's about 64x, so the ratio is the assertion, on CPU time
+        (see cpu_growth). The absolute times are left out of it.
         """
-        import time
         from vanilla_extract.recognize import DETECTORS, _detector
         shapes = {
             "uppercase hyphen run, no digit": lambda n: "AB" + "-AB" * (n // 3),
@@ -1112,21 +1139,13 @@ class TestHostileInput(unittest.TestCase):
         }
         for label, make in shapes.items():
             for name, regex, _ok in map(_detector, DETECTORS):
-                times = []
-                for n in (8000, 16000, 32000):
-                    text = make(n)
-                    start = time.perf_counter()
-                    regex.search(text)
-                    times.append(time.perf_counter() - start)
-                slowest = max(times)
+                slowest, ratio = cpu_growth(make, regex.search)
                 if slowest < 0.002:
                     continue          # too fast to time; nothing to conclude
-                ratio = max(times[i + 1] / times[i]
-                            for i in range(len(times) - 1) if times[i] > 0)
                 self.assertLess(
-                    ratio, 3.0,
-                    f"{name} grows {ratio:.1f}x per doubling on {label!r} "
-                    f"({slowest * 1000:.0f} ms at 32k) -- linear is ~2x")
+                    ratio, GROWTH_LIMIT,
+                    f"{name} grows {ratio:.1f}x for 8x the input on {label!r} "
+                    f"({slowest * 1000:.0f} ms at 64k) -- linear is ~8x")
 
     def _pdf_with_unmapped_text(self, pages, decodable_runs, body="readable",
                                 glyph_runs=60):
@@ -1297,18 +1316,16 @@ class TestHostileInput(unittest.TestCase):
         and the cleanup pass walked the whole run, failed, and began again one
         character later.
         """
-        import time
         from vanilla_extract.formats.rtf import extract_rtf
-        times = []
-        for n in (16000, 32000, 64000):
-            doc = (r"{\rtf1\ansi " + " " * n + "text}").encode()
-            start = time.perf_counter()
-            self.assertEqual(extract_rtf(doc), "text")
-            times.append(time.perf_counter() - start)
-        if max(times) > 0.002:
-            ratio = max(times[i + 1] / times[i] for i in range(2) if times[i] > 0)
-            self.assertLess(ratio, 3.0,
-                            f"whitespace cleanup grows {ratio:.1f}x per doubling")
+        make = lambda n: (r"{\rtf1\ansi " + " " * n + "text}").encode()   # noqa: E731
+        self.assertEqual(extract_rtf(make(100)), "text")
+        # 16k -> 128k: at 64k the whole cleanup takes under half a millisecond,
+        # too little to measure a ratio from. Asserted, not skipped -- a guard
+        # that skips when things are fast never runs.
+        slowest, ratio = cpu_growth(make, extract_rtf, small=16000, big=128000)
+        self.assertGreater(slowest, 0.0005, "too fast to measure growth")
+        self.assertLess(ratio, GROWTH_LIMIT,
+                        f"whitespace cleanup grows {ratio:.1f}x for 8x the input")
 
     def test_an_identifier_must_contain_a_digit(self):
         """`AB-Z--0911` returned `AB-Z`, which has no digit in it.
@@ -1369,13 +1386,13 @@ class TestReviewRegressions(unittest.TestCase):
 
     def test_pdf_object_index_is_not_quadratic(self):
         """#4 -- objects with no `endobj` sliced to end-of-file, n^2 in time and memory."""
-        import time
         from vanilla_extract.formats import pdfcmap
-        crafted = b"%PDF-1.4\n" + b"".join(
-            f"{i} 0 obj\n<</X 1>>\n".encode() for i in range(20000))
-        start = time.time()
-        pdfcmap.build_object_index(crafted)
-        self.assertLess(time.time() - start, 3.0)
+        # Growth on CPU time rather than a wall-clock budget: n objects of
+        # ~20 bytes, so GROWTH_SMALL..GROWTH_BIG bytes is 8x the objects.
+        make = lambda n: b"%PDF-1.4\n" + b"".join(      # noqa: E731
+            f"{i} 0 obj\n<</X 1>>\n".encode() for i in range(n // 8))
+        _slowest, ratio = cpu_growth(make, pdfcmap.build_object_index, reps=3)
+        self.assertLess(ratio, GROWTH_LIMIT, f"object index grows {ratio:.1f}x for 8x the objects")
 
     def test_pdf_flate_stream_is_capped(self):
         """#5 -- the primary format was the one decompression path with no ceiling."""
@@ -1411,9 +1428,9 @@ class TestReviewRegressions(unittest.TestCase):
         with open(os.path.join(d, "bomb.pdf"), "wb") as fh:
             fh.write(doc)
         with mock.patch.object(limits, "MAX_PDF_STREAM_BYTES", cap):
-            start = time.time()
+            start = time.thread_time()     # CPU, so a loaded machine cannot fail it
             results, exceptions = run([d])
-            took = time.time() - start
+            took = time.thread_time() - start
         self.assertEqual(results, [])
         self.assertEqual([e["reason"] for e in exceptions], ["limit_exceeded"])
         self.assertIn("MB", exceptions[0]["detail"])

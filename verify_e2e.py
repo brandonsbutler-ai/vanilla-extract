@@ -992,13 +992,13 @@ def verify_failure_modes(workdir):
     import resource
     from vanilla_extract.limits import StreamTooLarge
     before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
-    started = time.time()
+    started = time.thread_time()     # CPU time: a busy machine cannot fail it
     try:
         extract(doc, "pdfbomb.pdf")
         refused = "it returned text"
     except StreamTooLarge as e:
         refused = str(e)
-    took = time.time() - started
+    took = time.thread_time() - started
     after = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
     # "Refused" is what the README says; it used to keep the first 64 MB and
     # return it, exit 0, after 12.5 s of walking the inflated padding.
@@ -1359,20 +1359,27 @@ def verify_documentation(workdir):
         except _re.error:
             continue
         for _alpha in _alphabets:
+            # CPU time on this thread, best of five, 8k against 64k: linear
+            # grows ~8x, quadratic ~64x, and the limit is 24. Wall-clock ratios
+            # per doubling with a 3x limit failed 6 of 6 parallel runs on a
+            # loaded machine; CPU time barely moves under load.
             _t = []
-            for _n2 in (8000, 16000, 32000):
+            for _n2 in (8000, 64000):
                 _s = (_alpha * (_n2 // len(_alpha) + 1))[:_n2]
-                _t0 = _time.perf_counter()
-                try:
-                    _c.search(_s)
-                except Exception:
-                    pass
-                _t.append(_time.perf_counter() - _t0)
-            if max(_t) < 0.002:
+                _best = float("inf")
+                for _rep in range(5):
+                    _t0 = _time.thread_time()
+                    try:
+                        _c.search(_s)
+                    except Exception:
+                        pass
+                    _best = min(_best, _time.thread_time() - _t0)
+                _t.append(_best)
+            if _t[1] < 0.002:
                 continue
-            _ratio = max(_t[i + 1] / _t[i] for i in range(2) if _t[i] > 0)
-            if _ratio >= 3.0:
-                _slow.append(f"{_f}:{_ln} grows {_ratio:.1f}x -- {_pat[:44]}")
+            _ratio = _t[1] / max(_t[0], 1e-6)
+            if _ratio >= 24.0:
+                _slow.append(f"{_f}:{_ln} grows {_ratio:.1f}x for 8x input -- {_pat[:44]}")
     check(f"no regex in the package grows superlinearly ({len(_pats)} tested)",
           not _slow, _slow)
 
