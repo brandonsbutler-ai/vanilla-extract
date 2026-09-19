@@ -310,7 +310,7 @@ class TestArchive(unittest.TestCase):
 class TestCountMatchesTheWork(unittest.TestCase):
     """The number shown before a run must be the number the run does.
 
-    Brandon watched a run reach "35,600 of 23,700 files". The pre-scan counted
+    A run was watched reaching "35,600 of 23,700 files". The pre-scan counted
     an archive as ONE file while the walk expands it into every member inside,
     so the denominator was smaller than the work. Measured on two real trees
     before this was fixed: 2,210 counted against 3,919 processed, and 15,657
@@ -907,6 +907,54 @@ class TestProvenance(unittest.TestCase):
             with open(ws.manifest_path, encoding="utf-8") as fh:
                 json.load(fh)          # parses => the write completed or did not happen
             self.assertFalse(os.path.exists(ws.manifest_path + ".tmp"))
+
+
+class TestWorkspaceCost(unittest.TestCase):
+    """--workspace re-read and re-wrote the whole manifest per document, so the
+    cost grew with the square of the corpus: 2,000 documents took 65 s."""
+
+    def _cost(self, n):
+        import time
+        from vanilla_extract.provenance import Workspace
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        ws = Workspace(os.path.join(d, "ws"))
+        ws.create("test", [d])
+        start = time.thread_time()
+        with ws.deferred():
+            for i in range(n):
+                ws.capture(f"/src/doc{i}.txt", f"text {i}", source_bytes=b"x" * 50)
+        return time.thread_time() - start
+
+    def test_capturing_a_corpus_is_not_quadratic(self):
+        small, big = self._cost(250), self._cost(2000)      # 8x the documents
+        ratio = big / max(small, 1e-6)
+        self.assertLess(ratio, GROWTH_LIMIT,
+                        f"capture grows {ratio:.1f}x for 8x the documents")
+
+    def test_the_manifest_holds_every_document_after_the_run(self):
+        from vanilla_extract.provenance import Workspace
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        ws = Workspace(os.path.join(d, "ws"))
+        ws.create("test", [d])
+        with ws.deferred():
+            for i in range(5):
+                ws.capture(f"/src/doc{i}.txt", f"text {i}", source_bytes=b"x")
+        self.assertEqual(len(ws.load()["documents"]), 5)
+        self.assertEqual(ws.verify(), [])
+
+    def test_a_failed_run_still_records_what_it_captured(self):
+        from vanilla_extract.provenance import Workspace
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        ws = Workspace(os.path.join(d, "ws"))
+        ws.create("test", [d])
+        with self.assertRaises(KeyboardInterrupt):
+            with ws.deferred():
+                ws.capture("/src/a.txt", "text", source_bytes=b"x")
+                raise KeyboardInterrupt
+        self.assertEqual(len(ws.load()["documents"]), 1)
 
 
 class TestDesktopSession(unittest.TestCase):

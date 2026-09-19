@@ -17,6 +17,7 @@ regex, so "give me invoice number and total from these 400 PDFs" is one
 command rather than a script.
 """
 
+import contextlib
 import csv
 import io
 import os
@@ -410,6 +411,23 @@ def run(paths, fields=None, include_text=True, max_text=None, auto_labels=None,
     _BUDGETS.clear()
     results, exceptions = [], []
 
+    # One manifest held in memory for the run rather than re-read and re-written
+    # per document, which cost the square of the corpus (2,000 documents, 65 s).
+    with (workspace.deferred() if workspace is not None
+          else contextlib.nullcontext()):
+        results, exceptions, datasheet = _run_documents(
+            paths, fields, include_text, max_text, auto_labels, workspace,
+            copy_originals, collect_metadata, on_document, results, exceptions,
+            datasheet)
+    if collect_metadata:
+        return results, exceptions, datasheet
+    return results, exceptions
+
+
+def _run_documents(paths, fields, include_text, max_text, auto_labels, workspace,
+                   copy_originals, collect_metadata, on_document,
+                   results, exceptions, datasheet):
+    """The body of run(), one document at a time."""
     for label, source in _walk(paths):
         # Whether this document produced a row or an exception, decided by
         # what the body appended rather than by a flag each of the six exits
@@ -528,9 +546,7 @@ def run(paths, fields=None, include_text=True, max_text=None, auto_labels=None,
         finally:
             if on_document is not None:
                 on_document(label, len(exceptions) == _failed_before)
-    if collect_metadata:
-        return results, exceptions, datasheet
-    return results, exceptions
+    return results, exceptions, datasheet
 
 
 _FORMULA_LEAD = ("=", "+", "-", "@", "\t", "\r")

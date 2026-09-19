@@ -25,6 +25,7 @@ with write access to the workspace. Said plainly here so nobody assumes more of
 it than it does.
 """
 
+import contextlib
 import csv
 import datetime
 import hashlib
@@ -35,6 +36,10 @@ import shutil
 from .batch import csv_safe
 
 MANIFEST = "manifest.json"
+# How often a held manifest is written out anyway, so a process killed outright
+# loses at most this many documents from the record.
+_FLUSH_EVERY = 500
+
 _SCHEMA = 1
 
 
@@ -99,6 +104,9 @@ class Workspace:
     """A directory that holds originals, extractions and revisions together."""
 
     def __init__(self, root):
+        # Set before anything else: load() and _write() consult them.
+        self._held = None          # the manifest, while a run holds it
+        self._unwritten = 0
         self.root = os.path.abspath(root)
         self.originals = os.path.join(self.root, "originals")
         self.extracted = os.path.join(self.root, "extracted")
@@ -124,14 +132,43 @@ class Workspace:
         return manifest
 
     def load(self):
+        if self._held is not None:
+            return self._held
         with open(self.manifest_path, encoding="utf-8") as fh:
             return json.load(fh)
 
     def _write(self, manifest):
+        if self._held is not None:
+            self._held = manifest
+            self._unwritten += 1
+            if self._unwritten < _FLUSH_EVERY:
+                return
+            self._unwritten = 0
         tmp = self.manifest_path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(manifest, fh, indent=2)
         os.replace(tmp, self.manifest_path)      # atomic; never a half manifest
+
+    @contextlib.contextmanager
+    def deferred(self):
+        """Hold the manifest in memory for the length of a run.
+
+        capture() re-read and re-wrote the whole manifest per document, so a
+        run cost the square of its corpus: 2,000 documents took 65 s, nearly
+        all of it re-serialising a list that had just been serialised. Inside
+        this block the manifest is kept in memory and written every
+        _FLUSH_EVERY documents, and again when the block ends -- including when
+        it ends in an exception, so a cancelled run still records what it
+        captured.
+        """
+        self._held = self.load()
+        self._unwritten = 0
+        try:
+            yield self
+        finally:
+            manifest, self._held = self._held, None
+            self._unwritten = 0
+            self._write(manifest)
 
     def exists(self):
         return os.path.isfile(self.manifest_path)

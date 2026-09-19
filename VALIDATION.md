@@ -359,7 +359,7 @@ Every one of those is now a named regression test.
 git clone https://github.com/brandonsbutler-ai/vanilla-extract
 cd vanilla-extract
 
-python3 -m unittest discover -s tests -v    # 192 unit tests
+python3 -m unittest discover -s tests -v    # 195 unit tests
 python3 verify_e2e.py                       # 188 end-to-end claim checks
 python3 benchmark.py /path/to/your/pdfs     # quality against pdftotext
 ```
