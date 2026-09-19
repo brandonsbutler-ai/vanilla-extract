@@ -675,6 +675,23 @@ class TestRecognize(unittest.TestCase):
         self.assertEqual(sorted(labels), sorted(self.WANT))
         self.assertEqual(extract_fields(self.STACKED, labels), self.WANT)
 
+    def test_a_colon_label_takes_the_next_line_even_when_it_has_wide_spaces(self):
+        """`Overall risk:` above `CRITICAL  (3 confirmed exploitable)` was lost:
+        the double space made the value line read as a pair of its own, and a
+        junk `critical` column survived instead."""
+        from vanilla_extract.recognize import label_values
+        pairs = label_values("Executive Summary\nOverall risk:\n"
+                             "CRITICAL  (3 confirmed exploitable)\n"
+                             "Severity breakdown: CRITICAL 5, HIGH 1\n")
+        self.assertEqual(pairs.get("overall risk"), "CRITICAL  (3 confirmed exploitable)")
+        self.assertNotIn("critical", pairs)
+        self.assertEqual(pairs.get("severity breakdown"), "CRITICAL 5, HIGH 1")
+
+    def test_a_label_without_a_colon_does_not_take_a_column_line(self):
+        from vanilla_extract.recognize import label_values
+        pairs = label_values("Summary\nTerms    Net 30\n")
+        self.assertEqual(pairs, {"terms": "Net 30"})
+
     def test_page_furniture_and_http_verbs_are_not_columns(self):
         """A footer ("Acme Corp  |  Confidential" on every page) and an API
         reference's GET / POST lines were proposed as fields. A value that is

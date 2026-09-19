@@ -132,6 +132,14 @@ def _kinds(lines):
         if not line.strip():
             kinds.append("break")
             continue
+        # A label that ends in its own colon ("Overall risk:") announces the
+        # next line as its value. A wide gap inside that value -- "CRITICAL
+        # (3 confirmed)" -- made it read as a column pair of its own, losing the
+        # field and proposing a junk "critical" column in its place.
+        if (i > 0 and kinds[i - 1] == "label" and lines[i - 1].rstrip().endswith(":")
+                and not _COLON_RE.match(line) and _COLUMN_RE.match(line)):
+            kinds.append("value")
+            continue
         m = _COLON_RE.match(line) or _COLUMN_RE.match(line)
         if m:
             found.append((i, m.group(1), m.group(2)))
