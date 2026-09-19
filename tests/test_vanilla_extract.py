@@ -2508,6 +2508,20 @@ class TestOneContractForReasonsAndExits(unittest.TestCase):
         self.assertEqual(self._cli(self._file("zero.pdf", b""))[0], 1)        # no text
         self.assertEqual(self._cli(self._file("x.bin", b"\x00\x01\x02"))[0], 1)
 
+    def test_an_unwritable_output_path_is_a_usage_error_not_a_traceback(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        with open(os.path.join(d, "a.txt"), "w") as fh:
+            fh.write("Total: $5.00\n")
+        missing = os.path.join(d, "no", "such", "folder")
+        for option in ("--csv", "--exceptions", "--report", "--datasheet"):
+            target = os.path.join(missing, "out.html" if option in ("--report",) else "out.csv")
+            rc, _out, err = self._cli("--batch", d, option, target)
+            self.assertEqual(rc, 2, option)
+            self.assertIn(target, err, option)
+            self.assertIn("cannot write", err, option)
+            self.assertNotIn("Traceback", err, option)
+
     def test_json_names_the_reason_for_an_unsupported_file(self):
         import json
         rc, out, _err = self._cli("--json", self._file("x.dat", b"\x00\x01\x02\x03"))

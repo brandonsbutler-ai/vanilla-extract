@@ -92,6 +92,20 @@ def _run_workspace_op(args):
     return 0
 
 
+def _unwritable(path):
+    """Why `path` cannot be written as an output file, or None if it can."""
+    folder = os.path.dirname(os.path.abspath(path))
+    if os.path.isdir(path):
+        return "it is a folder"
+    if not os.path.isdir(folder):
+        return "its folder does not exist"
+    if os.path.exists(path) and not os.access(path, os.W_OK):
+        return "the file is not writable"
+    if not os.path.exists(path) and not os.access(folder, os.W_OK):
+        return "its folder is not writable"
+    return None
+
+
 def _run_batch(args):
     """--batch: a folder in, a results table and an exceptions table out."""
     try:
@@ -105,6 +119,20 @@ def _run_batch(args):
     if missing:
         for p in missing:
             print(f"vanilla: {p}: no such file or folder", file=sys.stderr)
+        return 2
+    # So is an output that cannot be written. Checked before any document is
+    # read: it used to surface as a traceback, with exit 1, after the whole
+    # batch had run.
+    unwritable = []
+    for option, out in (("--csv", args.csv), ("--exceptions", args.exceptions),
+                        ("--report", args.report), ("--datasheet", args.datasheet)):
+        if out:
+            why = _unwritable(out)
+            if why:
+                unwritable.append(f"vanilla: {option} {out}: cannot write here ({why})")
+    if unwritable:
+        for line in unwritable:
+            print(line, file=sys.stderr)
         return 2
 
     ws = None

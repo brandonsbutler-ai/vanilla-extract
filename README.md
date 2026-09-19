@@ -252,7 +252,7 @@ On the command line (`vanilla file.pdf`, `vanilla --json file.pdf`, `vanilla arc
 |---|---|
 | **0** | every file, and every member of every archive, produced text |
 | **1** | a document, or an archive member, could not be read or produced no text -- the reason code is on stderr, and with `--json` each such file or member is a record carrying `reason` and `detail` |
-| **2** | a usage error: a bad option or `--field` pattern, a path that does not exist, a folder given without `--batch`, a `--batch` path that does not exist (nothing is written), a missing `--import-csv` file |
+| **2** | a usage error: a bad option or `--field` pattern, a path that does not exist, a folder given without `--batch`, a `--batch` path that does not exist (nothing is written), an output (`--csv`, `--exceptions`, `--report`, `--datasheet`) that cannot be written -- checked before any document is read -- a missing `--import-csv` file |
 
 `--batch` is different on purpose: an unreadable document is a row in the exceptions table, a
 reported result rather than a failed run, and it exits 0.
@@ -559,7 +559,7 @@ Every option the command accepts. `--help` prints the same list.
 Two layers, both runnable:
 
 ```bash
-python3 -m unittest discover -s tests -v     # 191 unit tests
+python3 -m unittest discover -s tests -v     # 192 unit tests
 python3 verify_e2e.py                        # 188 end-to-end claim checks
 ```
 
@@ -579,7 +579,7 @@ figures here are whatever it last measured, not what would read best.
 python3 -m unittest discover -s tests -v
 ```
 
-191 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
+192 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
 there is nothing opaque in the repo. The suite covers the cases that actually break extractors:
 balanced parens inside PDF strings, escaped close-parens, octal escapes, odd hex nibbles,
 RTF `\fonttbl` contents leaking into output, cp1252 fallback, and misnamed files -- plus the
