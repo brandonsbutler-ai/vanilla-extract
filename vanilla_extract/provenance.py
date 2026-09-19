@@ -292,6 +292,19 @@ def _diff_rows(old_rows, new_rows, columns, key):
 
 
 def read_csv_rows(path):
-    with open(path, newline="", encoding="utf-8-sig") as fh:
-        reader = csv.DictReader(fh)
-        return list(reader), list(reader.fieldnames or [])
+    """(rows, columns, encoding) of a corrected table.
+
+    UTF-8 first (with or without the BOM Excel writes for "CSV UTF-8"), then
+    Windows-1252 -- what Excel's plain "CSV" save produces on Windows, and
+    what raised a raw UnicodeDecodeError here before. The encoding used is
+    returned so the caller can say which it was.
+    """
+    for encoding in ("utf-8-sig", "cp1252"):
+        try:
+            with open(path, newline="", encoding=encoding) as fh:
+                reader = csv.DictReader(fh)
+                return list(reader), list(reader.fieldnames or []), encoding
+        except UnicodeDecodeError:
+            continue
+    raise ValueError(f"{path}: neither UTF-8 nor Windows-1252 text; save it "
+                     f"from the spreadsheet as CSV UTF-8 and import that")

@@ -363,6 +363,10 @@ revision 2: 4 rows, 2 cell(s) changed from the previous revision
     INV-1002.txt: total: '$433.00' -> '$433.50'
 ```
 
+`--import-csv` reads UTF-8 (with or without a BOM) and, failing that, Windows-1252 -- what Excel's
+plain "CSV" save writes -- and says so when it falls back. A file that is missing or unreadable is
+an error with exit status 2, not a traceback.
+
 `--verify` re-hashes every artefact and exits non-zero if anything changed since capture.
 
 **What the hashes do and do not prove:** SHA-256 establishes integrity and detects drift. It is
@@ -505,7 +509,7 @@ Every option the command accepts. `--help` prints the same list.
 Two layers, both runnable:
 
 ```bash
-python3 -m unittest discover -s tests -v     # 158 unit tests
+python3 -m unittest discover -s tests -v     # 160 unit tests
 python3 verify_e2e.py                        # 188 end-to-end claim checks
 ```
 
@@ -525,7 +529,7 @@ figures here are whatever it last measured, not what would read best.
 python3 -m unittest discover -s tests -v
 ```
 
-158 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
+160 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
 there is nothing opaque in the repo. The suite covers the cases that actually break extractors:
 balanced parens inside PDF strings, escaped close-parens, octal escapes, odd hex nibbles,
 RTF `\fonttbl` contents leaking into output, cp1252 fallback, and misnamed files -- plus the

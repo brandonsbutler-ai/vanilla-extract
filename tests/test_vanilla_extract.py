@@ -2144,6 +2144,52 @@ class TestEmptyOutsideBatch(unittest.TestCase):
         self.assertEqual(caught.exception.reason, "truncated_or_corrupt")
 
 
+class TestImportCsvInput(unittest.TestCase):
+    """--import-csv ended in a raw traceback for Excel's plain "CSV" save,
+    which is Windows-1252, and for a mistyped path."""
+
+    def _workspace(self):
+        from vanilla_extract.batch import run
+        from vanilla_extract.provenance import Workspace
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        src = os.path.join(d, "src")
+        os.makedirs(src)
+        with open(os.path.join(src, "Rechnung_Müller.txt"), "w", encoding="utf-8") as fh:
+            fh.write("Kunde: Müller GmbH\n")
+        ws = Workspace(os.path.join(d, "ws"))
+        ws.create("test", [src])
+        results, _ = run([src], workspace=ws)
+        ws.add_revision(results, ["file", "characters"], note="as extracted")
+        return d, ws, results[0]["file"]
+
+    def _cli(self, *argv):
+        import contextlib
+        from vanilla_extract.__main__ import main
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = main(list(argv))
+        return rc, out.getvalue(), err.getvalue()
+
+    def test_a_windows_1252_csv_is_read_and_the_encoding_named(self):
+        d, ws, label = self._workspace()
+        path = os.path.join(d, "excel.csv")
+        with open(path, "wb") as fh:
+            fh.write(f"file,characters\r\n{label},999\r\n".encode("cp1252"))
+        rc, out, err = self._cli("--workspace", ws.root, "--import-csv", path)
+        self.assertEqual(rc, 0, err)
+        self.assertIn("cp1252", out + err)
+        self.assertIn("1 cell(s) changed", out)       # matched by the ü path
+
+    def test_a_missing_csv_is_a_clear_error(self):
+        d, ws, _label = self._workspace()
+        rc, out, err = self._cli("--workspace", ws.root, "--import-csv",
+                                 os.path.join(d, "nope.csv"))
+        self.assertEqual(rc, 2)
+        self.assertIn("nope.csv", err)
+        self.assertNotIn("Traceback", err)
+
+
 def _chromium():
     """A headless Chromium through Playwright, or None where it is not installed.
 

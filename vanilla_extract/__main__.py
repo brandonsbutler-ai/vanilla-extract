@@ -62,7 +62,17 @@ def _run_workspace_op(args):
         print("all artefacts match their recorded hashes")
 
     if args.import_csv:
-        rows, columns = read_csv_rows(args.import_csv)
+        try:
+            rows, columns, encoding = read_csv_rows(args.import_csv)
+        except FileNotFoundError:
+            print(f"vanilla: {args.import_csv}: no such file", file=sys.stderr)
+            return 2
+        except (OSError, ValueError) as exc:
+            print(f"vanilla: cannot read {args.import_csv}: {exc}", file=sys.stderr)
+            return 2
+        if encoding != "utf-8-sig":
+            print(f"vanilla: {args.import_csv} is not UTF-8; read it as "
+                  f"{encoding} (Windows-1252, Excel's plain CSV)", file=sys.stderr)
         entry = ws.add_revision(rows, columns,
                                 note=f"imported from {os.path.basename(args.import_csv)}")
         print(f"revision {entry['revision']}: {entry['rows']} rows, "
