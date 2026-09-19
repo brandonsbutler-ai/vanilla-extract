@@ -2049,6 +2049,37 @@ class TestEveryInputIsAccountedFor(unittest.TestCase):
             "env": "excluded_directory",
         })
 
+    def test_symlinked_and_unreadable_folders_are_reported(self):
+        """os.walk does not follow a symlinked folder and silently skips one it
+        cannot list, so both used to vanish from every table."""
+        if not hasattr(os, "symlink") or os.name != "posix" or os.geteuid() == 0:
+            self.skipTest("needs POSIX permissions and a non-root user")
+        from vanilla_extract.batch import run
+        d = self._tree()
+        elsewhere = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, elsewhere, True)
+        with open(os.path.join(elsewhere, "linked.txt"), "w") as fh:
+            fh.write("Invoice Number: INV-6\n")
+        os.symlink(elsewhere, os.path.join(d, "linked"))
+        locked = os.path.join(d, "locked")
+        os.makedirs(locked)
+        with open(os.path.join(locked, "secret.txt"), "w") as fh:
+            fh.write("Invoice Number: INV-7\n")
+        os.chmod(locked, 0)
+        self.addCleanup(os.chmod, locked, 0o755)
+        results, exceptions = run([d])
+        reasons = {os.path.relpath(e["file"], d): e["reason"] for e in exceptions}
+        self.assertEqual(reasons.get("linked"), "symlink_not_followed")
+        self.assertEqual(reasons.get("locked"), "unreadable_directory")
+        self.assertNotIn("linked.txt", {os.path.basename(r["file"]) for r in results})
+        # The reconcile still closes: what the walk can see, the archive
+        # standing for its members, and each unentered folder as one input.
+        visible = sum(len(files) for _r, _d, files in os.walk(d))
+        inputs = visible - 1 + 2 + 1 + 2
+        per_file = [e for e in exceptions if "files_not_read" not in e]
+        excluded = sum(e["files_not_read"] for e in exceptions if "files_not_read" in e)
+        self.assertEqual(len(results) + len(per_file) + excluded, inputs)
+
     def test_the_gui_prescan_still_counts_exactly_the_work(self):
         from vanilla_extract import batch
         from vanilla_extract.gui.session import Index

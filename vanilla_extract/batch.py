@@ -263,9 +263,28 @@ def _walk(paths, recurse_archives=True):
 
     for path in paths:
         if os.path.isdir(path):
-            for root, dirs, files in os.walk(path):
+            # os.walk skips a folder it cannot list unless told what to do with
+            # the error, and never enters a symlinked folder; both used to leave
+            # no trace. Symlinks stay unfollowed (a link back up the tree is a
+            # loop) but each is reported, as is every folder that would not list.
+            unlisted = []
+            for root, dirs, files in os.walk(path, onerror=unlisted.append):
+                while unlisted:
+                    err = unlisted.pop(0)
+                    yield err.filename, Skip(
+                        "unreadable_directory",
+                        f"the folder could not be listed ({err.strerror}); nothing "
+                        f"in it was read")
                 kept = []
                 for d in sorted(dirs):
+                    full = os.path.join(root, d)
+                    if os.path.islink(full):
+                        yield full, Skip(
+                            "symlink_not_followed",
+                            f"a link to the folder {os.path.realpath(full)}; not "
+                            f"followed, since a link can loop back up the tree -- "
+                            f"name the target on the command line to read it")
+                        continue
                     why = _excluded(root, d)
                     if why is None:
                         kept.append(d)
@@ -279,6 +298,11 @@ def _walk(paths, recurse_archives=True):
                 dirs[:] = kept
                 for name in sorted(files):
                     yield from _file(os.path.join(root, name))
+            for err in unlisted:          # the top folder itself, or the last one
+                yield err.filename, Skip(
+                    "unreadable_directory",
+                    f"the folder could not be listed ({err.strerror}); nothing "
+                    f"in it was read")
         else:
             yield from _file(path)
 
