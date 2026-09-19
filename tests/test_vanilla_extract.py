@@ -2344,6 +2344,60 @@ class TestReviewPageInABrowser(unittest.TestCase):
         self.assertEqual([r["total"] for r in rows],
                          ["-$251.00", "'-2+3+cmd|' /C calc'!A0"])
 
+    def _layout(self, width, rows=None, columns=None):
+        from vanilla_extract.report import write_report
+        path = os.path.join(self.dir, f"layout{width}.html")
+        long = "a long extracted value that runs on for a good many words " * 2
+        rows = rows or [dict({"file": f"/data/evidence_package.zip!0{i}_System_Security_Plan.pdf",
+                              "characters": 1000}, **{f"field {c}": long for c in range(6)})
+                        for i in range(3)] + [{"file": "/data/no_fields_here.pdf", "characters": 9}]
+        write_report(rows, [], path, columns=["file", "characters"] + [f"field {c}" for c in range(6)])
+        page = self.ctx.new_page()
+        page.set_viewport_size({"width": width, "height": 900})
+        page.goto("file://" + path)
+        return page
+
+    def test_file_names_stay_readable_at_1400_and_on_a_phone(self):
+        """They wrapped a letter or two per line once the value columns took
+        the width."""
+        for width in (1400, 390):
+            page = self._layout(width)
+            narrowest = page.evaluate(
+                "Math.min(...[...document.querySelectorAll('td.file')]"
+                ".map(td => td.getBoundingClientRect().width))")
+            self.assertGreaterEqual(narrowest, 120, width)
+
+    def test_the_no_fields_badge_fits_inside_its_cell(self):
+        for width in (1400, 390):
+            page = self._layout(width)
+            badge, cell = page.evaluate(
+                "(() => { const b = document.querySelector('.nofields');"
+                " return [b.getBoundingClientRect().right,"
+                " b.closest('td').getBoundingClientRect().right]; })()")
+            self.assertLessEqual(badge, cell, width)
+
+    def test_the_datasheet_uses_the_width_and_keeps_dates_on_one_line(self):
+        from vanilla_extract.fileinfo import stat_record
+        from vanilla_extract.report import write_datasheet
+        doc = os.path.join(self.dir, "a_document_with_a_fairly_long_name.pdf")
+        with open(doc, "w") as fh:
+            fh.write("x")
+        path = os.path.join(self.dir, "sheet.html")
+        write_datasheet([stat_record(doc)] * 3, path)
+        page = self.ctx.new_page()
+        page.set_viewport_size({"width": 1920, "height": 900})
+        page.goto("file://" + path)
+        wrap = page.evaluate("document.querySelector('.tablewrap').getBoundingClientRect().width")
+        self.assertGreater(wrap, 1800)
+        lines = page.evaluate("""[...document.querySelectorAll('#sheet thead th')]
+          .map((th, i) => [th.dataset.col, i])
+          .filter(([c]) => ['modified', 'accessed', 'inode_changed', 'captured_at'].includes(c))
+          .map(([c, i]) => { const td = document.querySelector('#sheet tbody tr').children[i];
+                 const r = document.createRange(); r.selectNodeContents(td);
+                 return [c, new Set([...r.getClientRects()].map(x => Math.round(x.top))).size]; })""")
+        self.assertTrue(lines)
+        self.assertEqual({c: n for c, n in lines}, {c: 1 for c, _n in lines})
+
     def test_the_page_works_when_storage_throws(self):
         """Private windows and locked-down browsers refuse localStorage."""
         self.ctx.add_init_script(

@@ -63,8 +63,8 @@ td[contenteditable]:focus{outline:2px solid var(--accent);outline-offset:-2px;bo
 td.edited{background:color-mix(in srgb,var(--accent) 12%,transparent)}
 tr:last-child td{border-bottom:none}
 .file{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;
-      max-width:280px;overflow-wrap:anywhere}
-.nofields{display:inline-block;border-radius:20px;padding:1px 8px;margin-right:6px;
+      max-width:280px;min-width:18ch;overflow-wrap:anywhere}
+.nofields{display:block;width:max-content;margin-bottom:4px;border-radius:20px;padding:1px 8px;
       font-size:11px;background:var(--warnbg);color:var(--warn);white-space:nowrap;
       border:1px solid transparent;cursor:help}
 .view{cursor:pointer;color:var(--accent);text-decoration:underline;
@@ -413,7 +413,15 @@ function csvCell(s){
 """
 
 _SHEET_CSS = """
+.wrap{max-width:none}
 th{cursor:pointer;user-select:none}
+td.mono{white-space:nowrap}
+#sheet td.path{white-space:normal;overflow-wrap:anywhere;min-width:40ch;max-width:60ch}
+#sheet th:first-child,#sheet td:first-child{position:sticky;left:0;background:var(--card);
+      z-index:1;min-width:24ch;max-width:320px;overflow-wrap:anywhere}
+#sheet td[data-sort]{white-space:nowrap}
+#sheet td{min-width:12ch}
+#sheet thead th:first-child{z-index:2}
 th[data-dir=up]::after{content:" \\2191"}
 th[data-dir=down]::after{content:" \\2193"}
 td.num{text-align:right;font-variant-numeric:tabular-nums}
@@ -457,6 +465,8 @@ def write_datasheet(rows, path, columns=None, title="File state datasheet"):
             value = row.get(col)
             shown = "" if value is None else str(value)
             cls = "num" if col in _NUMERIC else ("mono" if col in _MONO else "")
+            if col == "path":
+                cls = "mono path"      # the one monospace column that may wrap
             if col == "ownership_reliable" and value is False:
                 cells.append('<td class="flag">not reliable</td>')
                 continue
@@ -515,6 +525,7 @@ def write_datasheet(rows, path, columns=None, title="File state datasheet"):
   <input type="search" id="q" placeholder="Filter by name, owner, date, permissions...">
   <button class="primary" id="export">Export filtered CSV</button>
   <span class="sub" id="count" style="margin:0">{len(rows)} of {len(rows)}</span>
+  <span class="sub" style="margin:0">&middot; {len(columns)} columns; scroll sideways, the name stays put</span>
 </div>
 <div class="tablewrap"><table id="sheet"><thead><tr>{head}</tr></thead>
 <tbody>{"".join(body) or '<tr><td class="empty">No files.</td></tr>'}</tbody></table></div>
