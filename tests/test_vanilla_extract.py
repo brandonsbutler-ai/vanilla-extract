@@ -634,6 +634,23 @@ class TestRecognize(unittest.TestCase):
         self.assertEqual(sorted(labels), sorted(self.WANT))
         self.assertEqual(extract_fields(self.STACKED, labels), self.WANT)
 
+    def test_page_furniture_and_http_verbs_are_not_columns(self):
+        """A footer ("Acme Corp  |  Confidential" on every page) and an API
+        reference's GET / POST lines were proposed as fields. A value that is
+        the same in nine documents of ten is boilerplate, not a field."""
+        from vanilla_extract.recognize import infer_schema
+        docs = [f"Invoice Number: INV-{i}\nAcme Corp  |  Confidential\n"
+                f"GET\n/api/v{i}/items\nPOST\n/api/v{i}/scope\n" for i in range(10)]
+        self.assertEqual([f["label"] for f in infer_schema(docs)], ["invoice number"])
+
+    def test_a_constant_value_in_a_handful_of_documents_is_still_a_field(self):
+        """Too few documents to call anything boilerplate: the README's own
+        four-invoice example must keep every column."""
+        from vanilla_extract.recognize import infer_schema
+        docs = [f"Invoice Number: INV-{i}\nTerms: Net 30\n" for i in range(4)]
+        self.assertEqual(sorted(f["label"] for f in infer_schema(docs)),
+                         ["invoice number", "terms"])
+
     def test_a_label_shaped_line_that_merely_recurs_is_not_known(self):
         """Headings recur too. Without a plain statement of the label anywhere,
         the stacked pairs stay unread: a blank cell, not a wrong value."""

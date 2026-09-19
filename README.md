@@ -67,6 +67,14 @@ corpus in the validation run, that took recall on stacked layouts from 0.58 to 1
 (0.795 to 1.000 overall) with precision unchanged at 1.000, and it proposed no new columns on
 three real deliveries of technical documents.
 
+Two kinds of line are never proposed as columns. A label whose value is the same in nine of ten
+documents carrying it (once at least five do) is boilerplate -- a page footer such as
+`Acme Corp  |  Confidential`, a template placeholder -- because a column that says the same
+thing on every row tells the reader nothing; the cost is that a genuinely constant field, such as
+`Terms: Net 30` across one vendor's invoices, is not proposed either, and `--field` still reads
+it. And HTTP method names (`GET`, `POST`, ...), which an API reference sets on a line of their own
+above a path, are not field labels.
+
 `--report` writes a **single self-contained HTML file**: every extracted value editable in place,
 the source text of each document one click away so a suspect value can be checked against the page
 it came from, the exceptions table given equal billing, and a button that exports the corrected
@@ -457,7 +465,7 @@ Every option the command accepts. `--help` prints the same list.
 Two layers, both runnable:
 
 ```bash
-python3 -m unittest discover -s tests -v     # 155 unit tests
+python3 -m unittest discover -s tests -v     # 157 unit tests
 python3 verify_e2e.py                        # 186 end-to-end claim checks
 ```
 
@@ -477,7 +485,7 @@ figures here are whatever it last measured, not what would read best.
 python3 -m unittest discover -s tests -v
 ```
 
-155 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
+157 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
 there is nothing opaque in the repo. The suite covers the cases that actually break extractors:
 balanced parens inside PDF strings, escaped close-parens, octal escapes, odd hex nibbles,
 RTF `\fonttbl` contents leaking into output, cp1252 fallback, and misnamed files -- plus the

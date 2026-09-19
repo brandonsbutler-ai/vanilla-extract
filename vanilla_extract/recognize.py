@@ -70,7 +70,18 @@ DETECTORS = [
 _LABEL_STOPWORDS = {
     "page", "continued", "note", "notes", "comments", "description",
     "terms and conditions", "thank you", "sincerely", "regards",
+    # HTTP methods: an API reference sets "GET" above "/api/scope" on a line
+    # of its own, which is the label-on-its-own-line shape. A form field is
+    # never called "GET".
+    "get", "post", "put", "patch", "delete",
 }
+
+# A label whose value is identical in this share of the documents carrying it
+# is boilerplate -- a page footer, a template placeholder -- not a field: a
+# column that says the same thing on every row tells the reader nothing. Only
+# judged once enough documents carry the label to make the share meaningful.
+_BOILERPLATE_SHARE = 0.9
+_BOILERPLATE_MIN_DOCS = 5
 
 _COLON_RE = re.compile(r"^\s*([A-Za-z][A-Za-z0-9 /&'().#-]{1,40}?)\s*:\s*(.+?)\s*$")
 _COLUMN_RE = re.compile(r"^\s*([A-Za-z][A-Za-z0-9 /&'().#-]{1,40}?)\s{2,}(\S.*?)\s*$")
@@ -223,6 +234,7 @@ def infer_schema(texts, min_support=0.5, max_fields=25):
         return []
     counts = Counter()
     kinds = defaultdict(Counter)
+    values = defaultdict(Counter)
     examples = {}
     known = _common_labels(texts, min_support)
     for text in texts:
@@ -230,6 +242,7 @@ def infer_schema(texts, min_support=0.5, max_fields=25):
         for label, value in pairs.items():
             counts[label] += 1
             kinds[label][classify(value)] += 1
+            values[label][value] += 1
             examples.setdefault(label, value)
 
     total = len(texts)
@@ -237,6 +250,9 @@ def infer_schema(texts, min_support=0.5, max_fields=25):
     for label, count in counts.most_common():
         ratio = count / total
         if ratio < min_support:
+            continue
+        if (count >= _BOILERPLATE_MIN_DOCS and
+                values[label].most_common(1)[0][1] / count >= _BOILERPLATE_SHARE):
             continue
         proposed.append({
             "label": label,
