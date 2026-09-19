@@ -357,7 +357,7 @@ Every one of those is now a named regression test.
 
 ```bash
 git clone https://github.com/brandonsbutler-ai/vanilla-extract
-cd vanilla_extract
+cd vanilla-extract
 
 python3 -m unittest discover -s tests -v    # 170 unit tests
 python3 verify_e2e.py                       # 188 end-to-end claim checks
