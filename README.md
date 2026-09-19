@@ -59,6 +59,14 @@ by how many documents carry them. A label in 380 of 400 files is a column; one i
 Each column is typed by a conservative detector (money, dates, email, phone, percent, identifier),
 because a pattern that fires on the wrong thing costs more than one that stays quiet.
 
+Label-on-its-own-line is the ambiguous form: `Customer` above `Contoso Ltd` is two short
+capitalised lines, and one document cannot say which is the label. The corpus can. A label that
+other documents state plainly (`Customer: Fabrikam Inc`) is read above a value that looks like a
+label; a line that merely recurs, as headings do, is not treated as one. On the synthetic invoice
+corpus in the validation run, that took recall on stacked layouts from 0.58 to 1.00 per field
+(0.795 to 1.000 overall) with precision unchanged at 1.000, and it proposed no new columns on
+three real deliveries of technical documents.
+
 `--report` writes a **single self-contained HTML file**: every extracted value editable in place,
 the source text of each document one click away so a suspect value can be checked against the page
 it came from, the exceptions table given equal billing, and a button that exports the corrected
@@ -449,7 +457,7 @@ Every option the command accepts. `--help` prints the same list.
 Two layers, both runnable:
 
 ```bash
-python3 -m unittest discover -s tests -v     # 149 unit tests
+python3 -m unittest discover -s tests -v     # 155 unit tests
 python3 verify_e2e.py                        # 186 end-to-end claim checks
 ```
 
@@ -469,7 +477,7 @@ figures here are whatever it last measured, not what would read best.
 python3 -m unittest discover -s tests -v
 ```
 
-149 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
+155 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
 there is nothing opaque in the repo. The suite covers the cases that actually break extractors:
 balanced parens inside PDF strings, escaped close-parens, octal escapes, odd hex nibbles,
 RTF `\fonttbl` contents leaking into output, cp1252 fallback, and misnamed files -- plus the

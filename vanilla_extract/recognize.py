@@ -112,46 +112,97 @@ def find_values(text, kind):
     raise KeyError(f"no detector named {kind!r}")
 
 
-def label_values(text, max_value_len=200):
+def _kinds(lines):
+    """Sort lines into finished pairs, label-shaped lines, value lines and
+    breaks. A value line is one a label cannot be: it has a character no label
+    has, or it reads as a typed value (money, date, identifier, ...)."""
+    found, kinds = [], []
+    for i, line in enumerate(lines):
+        if not line.strip():
+            kinds.append("break")
+            continue
+        m = _COLON_RE.match(line) or _COLUMN_RE.match(line)
+        if m:
+            found.append((i, m.group(1), m.group(2)))
+            kinds.append("break")
+        elif _LABELISH_RE.match(line) and classify(line.strip()) == "text":
+            kinds.append("label")
+        else:
+            kinds.append("value")
+    return found, kinds
+
+
+def label_values(text, max_value_len=200, known=None):
     """Extract {normalized label: value} pairs from a document's text.
 
     Reads colon-separated, column-separated, and label-on-its-own-line forms.
     Earlier occurrences win, because a form's first statement of a field is
     almost always the real one and later repeats are summaries or footers.
-    """
-    out = {}
-    lines = [ln.rstrip() for ln in text.splitlines()]
 
-    def record(raw_label, value):
+    Label-on-its-own-line is the hard one, because a value can look exactly
+    like a label: "Contoso Ltd" and "Net 15" are short capitalised lines, just
+    as "Customer" and "Terms" are. One document cannot tell them apart; a
+    corpus can, because other documents state the label plainly
+    ("Customer: Fabrikam Inc") and the value does not recur. So:
+
+      * a label-shaped line directly above a VALUE line (one no label could
+        be) is that value's label -- this needs no outside knowledge;
+      * a label-shaped line above another label-shaped line is paired only
+        when `known` -- labels the corpus states clearly, from infer_schema(),
+        or the chosen columns, from extract_fields() -- names the first and
+        not the second. Without `known`, such a pair is left alone.
+
+    Precision over recall, deliberately: an unpaired field is a blank cell a
+    reviewer notices; a wrongly paired one is a plausible value nobody does.
+    """
+    lines = [ln.rstrip() for ln in text.splitlines()]
+    known = {normalize_label(k) for k in known} if known else set()
+    found, kinds = _kinds(lines)
+
+    def own_label(i):
+        return _LABELISH_RE.match(lines[i]).group(1)
+
+    used = set()                    # a line taken as a value is not a label
+    for i, kind in enumerate(kinds):
+        if kind != "label" or i in used or i + 1 >= len(kinds):
+            continue
+        if kinds[i + 1] == "value":
+            found.append((i, own_label(i), lines[i + 1].strip()))
+            used.add(i + 1)
+        elif (kinds[i + 1] == "label" and normalize_label(own_label(i)) in known
+              and normalize_label(own_label(i + 1)) not in known):
+            found.append((i, own_label(i), lines[i + 1].strip()))
+            used.add(i + 1)
+
+    out = {}
+    for _i, raw_label, value in sorted(found, key=lambda f: f[0]):
         value = value.strip()
         if not value or len(value) > max_value_len:
-            return
+            continue
         key = normalize_label(raw_label)
         if not key or key in _LABEL_STOPWORDS or len(key) < 2:
-            return
+            continue
         if key.isdigit():
-            return
+            continue
         out.setdefault(key, value)
-
-    for i, line in enumerate(lines):
-        if not line.strip():
-            continue
-        m = _COLON_RE.match(line)
-        if m:
-            record(m.group(1), m.group(2))
-            continue
-        m = _COLUMN_RE.match(line)
-        if m:
-            record(m.group(1), m.group(2))
-            continue
-        # Label alone on a line, value on the next non-blank line.
-        m = _LABELISH_RE.match(line)
-        if m and i + 1 < len(lines):
-            nxt = lines[i + 1].strip()
-            # Only if the next line does not itself look like a label.
-            if nxt and not _COLON_RE.match(nxt) and not _LABELISH_RE.match(nxt):
-                record(m.group(1), nxt)
     return out
+
+
+def _common_labels(texts, min_support):
+    """Labels that at least `min_support` of the documents state CLEARLY --
+    colon, column, or above a line no label could be.
+
+    A label-shaped line that merely recurs is not enough. Section headings and
+    table headers recur too ("Version", "Method", "Purpose"), and admitting
+    them paired each with whatever line followed it: on one real delivery of
+    technical documents that turned five proposed columns into thirteen. So a
+    stacked label is read when the corpus has seen it stated plainly
+    elsewhere, as a mixed folder of form layouts almost always does.
+    """
+    df = Counter()
+    for text in texts:
+        df.update(set(label_values(text)))
+    return {label for label, n in df.items() if n / len(texts) >= min_support}
 
 
 def infer_schema(texts, min_support=0.5, max_fields=25):
@@ -173,8 +224,9 @@ def infer_schema(texts, min_support=0.5, max_fields=25):
     counts = Counter()
     kinds = defaultdict(Counter)
     examples = {}
+    known = _common_labels(texts, min_support)
     for text in texts:
-        pairs = label_values(text)
+        pairs = label_values(text, known=known)
         for label, value in pairs.items():
             counts[label] += 1
             kinds[label][classify(value)] += 1
@@ -199,6 +251,10 @@ def infer_schema(texts, min_support=0.5, max_fields=25):
 
 
 def extract_fields(text, labels):
-    """Pull the given labels out of one document. Missing labels give ""."""
-    pairs = label_values(text)
+    """Pull the given labels out of one document. Missing labels give "".
+
+    The labels double as `known` for label_values(), which is what lets a
+    label stacked above a label-shaped value ("Customer" / "Contoso Ltd") be
+    read at all."""
+    pairs = label_values(text, known=labels)
     return {label: pairs.get(normalize_label(label), "") for label in labels}

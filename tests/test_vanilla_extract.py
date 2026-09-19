@@ -599,6 +599,60 @@ class TestRecognize(unittest.TestCase):
         from vanilla_extract.recognize import infer_schema
         self.assertEqual(infer_schema([]), [])
 
+    # A layout that puts every label on its own line, as fpdf2 and many
+    # flattened forms render it. Values like "INV-1001", "Contoso Ltd" and
+    # "Net 15" look like labels themselves, so the rule "the next line must
+    # not look like a label" dropped three of six fields: recall 0.577 on them.
+    STACKED = ("INVOICE\nInvoice Number\nINV-1001\nInvoice Date\n06/13/2026\n"
+               "Customer\nContoso Ltd\nTerms\nNet 15\nTotal\n$188,900.99\n"
+               "Contact\nap1@contoso.example\n")
+
+    WANT = {"invoice number": "INV-1001", "invoice date": "06/13/2026",
+            "customer": "Contoso Ltd", "terms": "Net 15",
+            "total": "$188,900.99", "contact": "ap1@contoso.example"}
+
+    def test_stacked_labels_pair_when_the_labels_are_known(self):
+        from vanilla_extract.recognize import label_values
+        self.assertEqual(label_values(self.STACKED, known=list(self.WANT)), self.WANT)
+
+    def test_without_knowledge_a_label_shaped_value_is_left_unpaired(self):
+        """One document cannot tell "Customer / Contoso Ltd" from two headings."""
+        from vanilla_extract.recognize import label_values
+        pairs = label_values(self.STACKED)
+        self.assertNotIn("customer", pairs)
+        self.assertEqual(pairs["invoice number"], "INV-1001")     # typed: unambiguous
+
+    def test_the_corpus_supplies_the_knowledge(self):
+        """Other documents state the label plainly -- that is how infer_schema
+        learns which stacked line is the label. The folder that exposed this
+        mixed a colon layout with two stacked ones."""
+        from vanilla_extract.recognize import extract_fields, infer_schema
+        plain = ("Invoice Number: INV-7\nInvoice Date: 2026-01-02\nCustomer: Fabrikam Inc\n"
+                 "Terms: Net 45\nTotal: $5.00\nContact: ap@fabrikam.example\n")
+        docs = [plain, plain.replace("Fabrikam Inc", "Tailspin Toys"), self.STACKED]
+        labels = [f["label"] for f in infer_schema(docs)]
+        self.assertEqual(sorted(labels), sorted(self.WANT))
+        self.assertEqual(extract_fields(self.STACKED, labels), self.WANT)
+
+    def test_a_label_shaped_line_that_merely_recurs_is_not_known(self):
+        """Headings recur too. Without a plain statement of the label anywhere,
+        the stacked pairs stay unread: a blank cell, not a wrong value."""
+        from vanilla_extract.recognize import infer_schema
+        docs = [self.STACKED.replace("Contoso Ltd", co)
+                for co in ("Contoso Ltd", "Fabrikam Inc", "Tailspin Toys")]
+        self.assertNotIn("customer", [f["label"] for f in infer_schema(docs)])
+
+    def test_a_run_of_headings_is_not_paired(self):
+        from vanilla_extract.recognize import label_values
+        text = "ACME CORP\nBilling Dept\nNorth Wing\nSuite B\n"
+        self.assertEqual(label_values(text), {})
+        self.assertEqual(label_values(text, known=["acme corp", "billing dept",
+                                                   "north wing", "suite b"]), {})
+
+    def test_a_typed_value_is_never_taken_as_a_label(self):
+        from vanilla_extract.recognize import label_values
+        self.assertNotIn("inv-1001", label_values("Invoice Number\nINV-1001\n$5.00\n"))
+
 
 class TestReport(unittest.TestCase):
     ROWS = [{"file": "a.pdf", "characters": 12, "total": "$5.00", "text": "Total: $5.00"}]
