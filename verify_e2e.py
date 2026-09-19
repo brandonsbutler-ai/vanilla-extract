@@ -1467,6 +1467,88 @@ def verify_documentation(workdir):
                   heading.group(1) if heading else "no heading found")
 
 
+# Commands the README shows that this suite cannot run as a user would: they
+# install, build, or run this suite itself. Named here so the check below can
+# prove that every OTHER command in a README code block was actually executed.
+_README_NOT_RUN = ("pip ", "python3 -m pip ", "python3 packaging/", "./packaging/",
+                   "PREFIX=", "iscc ", "python3 -m unittest", "python3 verify_e2e.py",
+                   "python3 benchmark.py", "python3 generate_validation_pdf.py",
+                   "git clone ", "cd ", "vanilla-gui", "python3 -m vanilla_extract.gui")
+
+
+def _readme_shell_commands(readme):
+    """Every command in the README's ```bash blocks, continuation lines joined
+    exactly as bash would read them."""
+    import re as _re
+    commands = []
+    for block in _re.findall(r"```bash\n(.*?)```", readme, _re.S):
+        current = ""
+        for line in block.splitlines():
+            current = f"{current}\n{line}" if current else line
+            if current.rstrip().endswith("\\"):
+                continue
+            if current.strip() and not current.strip().startswith("#"):
+                commands.append(current)
+            current = ""
+    return commands
+
+
+def verify_readme_examples(workdir):
+    section("CLAIM: every command the README shows works when pasted into bash")
+    # The README's own --field example failed when pasted: inside double quotes
+    # bash turns \$ into $, and Python refused the pattern with "nothing to
+    # repeat at position 14". Reading the example is not enough -- it has to go
+    # through bash, exactly as written, the way a reader would run it.
+    readme = open(os.path.join(ROOT, "README.md"), encoding="utf-8").read()
+    commands = _readme_shell_commands(readme)
+    runnable = [c for c in commands
+                if c.lstrip().startswith(("vanilla ", "python3 -m vanilla_extract "))]
+    unaccounted = [c for c in commands if c not in runnable
+                   and not c.lstrip().startswith(_README_NOT_RUN)]
+    check(f"every README command is either run here or named as not runnable "
+          f"({len(runnable)} run, {len(commands) - len(runnable)} install/build)",
+          not unaccounted, "\n".join(unaccounted))
+
+    # The files the examples name, so each one has something real to read.
+    ex = os.path.join(workdir, "readme_examples")
+    inv = os.path.join(ex, "invoices")
+    os.makedirs(inv)
+    for n in range(3):
+        ref, co, amt = rid("INV"), rcompany(), rmoney()
+        _ooxml(os.path.join(inv, f"invoice_{n}.docx"), {"word/document.xml": (
+            f'<?xml version="1.0"?><w:document {W_NS}><w:body>' + "".join(
+                f"<w:p><w:r><w:t>{t}</w:t></w:r></w:p>" for t in
+                (f"Invoice # {ref}", f"Customer: {co}", f"Total: ${amt}"))
+            + "</w:body></w:document>")})
+    stream = b"BT /F1 12 Tf 72 720 Td (Agreement between the parties) Tj ET"
+    for name in ("contract.pdf", "statement.pdf"):
+        with open(os.path.join(ex, name), "wb") as fh:
+            fh.write(b"%PDF-1.4\n1 0 obj\n<< /Length " + str(len(stream)).encode()
+                     + b" >>\nstream\n" + stream + b"\nendstream\nendobj\n%%EOF\n")
+    with zipfile.ZipFile(os.path.join(ex, "archive.zip"), "w") as zf:
+        zf.writestr("memo.txt", "Memo: the archive example has a document in it\n")
+    with open(os.path.join(ex, "corrected.csv"), "w", encoding="utf-8") as fh:
+        fh.write("file,characters\n")
+    bindir = os.path.join(ex, "bin")
+    os.makedirs(bindir)
+    with open(os.path.join(bindir, "vanilla"), "w") as fh:
+        fh.write(f'#!/bin/sh\nexec "{sys.executable}" -m vanilla_extract "$@"\n')
+    os.chmod(os.path.join(bindir, "vanilla"), 0o755)
+    env = dict(os.environ, PATH=bindir + os.pathsep + os.environ.get("PATH", ""),
+               PYTHONPATH=ROOT)
+
+    failed = []
+    for command in runnable:
+        r = subprocess.run(["bash", "-c", command], cwd=ex, env=env,
+                           capture_output=True, text=True, timeout=300)
+        if r.returncode != 0:
+            failed.append(f"rc={r.returncode}: {command.splitlines()[0]} ... "
+                          f"{r.stderr.strip()[-200:]}")
+    check(f"each README command runs through bash as written and exits 0 "
+          f"({len(runnable) - len(failed)}/{len(runnable)})",
+          bool(runnable) and not failed, "\n".join(failed))
+
+
 def verify_performance(corpus):
     section("MEASURED: large-PDF throughput (informational -- reported, not gated)")
     # The corpus is named by the environment, never hardcoded. It used to be an
@@ -1574,6 +1656,7 @@ def main():
         verify_packaging_and_deps(workdir)
         verify_unit_suite()
         verify_documentation(workdir)
+        verify_readme_examples(workdir)
         verify_performance(corpus)
 
     # Settled last, because the total is only known once everything has run.

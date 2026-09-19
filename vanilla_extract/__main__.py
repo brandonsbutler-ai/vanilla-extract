@@ -10,8 +10,8 @@ Batch a folder into a spreadsheet, with every unreadable file accounted for:
 
     python3 -m vanilla_extract --batch invoices/ --csv out.csv --exceptions skipped.csv
     python3 -m vanilla_extract --batch invoices/ --csv out.csv \
-        --field "invoice_no=Invoice\s*#?\s*([A-Z0-9-]+)" \
-        --field "total=Total\s*:?\s*\$?([0-9,]+\.[0-9]{2})"
+        --field 'invoice_no=Invoice\s*#?\s*([A-Z0-9-]+)' \
+        --field 'total=Total\s*:?\s*\$?([0-9,]+\.[0-9]{2})'
 
 Exit status is 1 if any input failed, so it composes in a shell pipeline.
 """

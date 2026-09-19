@@ -432,6 +432,23 @@ class TestBatch(unittest.TestCase):
         with self.assertRaises(ValueError):
             Field.parse("no-equals-sign")
 
+    def test_a_bad_field_regex_names_the_field_and_shows_the_pattern(self):
+        """`\\$` inside double quotes reaches Python as `$`, and the error said only
+        "nothing to repeat at position 14" -- not which of several --field
+        options it meant, nor what pattern the shell had actually handed over."""
+        import contextlib
+        import tempfile
+        from vanilla_extract.__main__ import main
+        pattern = r"Total\s*:?\s*$?([0-9,]+\.[0-9]{2})"   # what bash delivers
+        err = io.StringIO()
+        with tempfile.TemporaryDirectory() as d, contextlib.redirect_stderr(err):
+            rc = main(["--batch", d, "--field", r"ok=Invoice\s*(\d+)",
+                       "--field", "total=" + pattern])
+        self.assertEqual(rc, 2)
+        self.assertIn("--field total", err.getvalue())
+        self.assertIn(pattern, err.getvalue())
+        self.assertIn("nothing to repeat", err.getvalue())
+
     def test_write_csv_emits_header_even_when_empty(self):
         import tempfile
         from vanilla_extract.batch import write_csv

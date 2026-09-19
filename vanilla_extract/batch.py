@@ -83,7 +83,17 @@ class Field:
         name, sep, pattern = spec.partition("=")
         if not sep or not name.strip():
             raise ValueError(f"field spec must be NAME=REGEX, got {spec!r}")
-        return cls(name.strip(), pattern)
+        try:
+            return cls(name.strip(), pattern)
+        except re.error as exc:
+            # Say WHICH field and WHAT pattern arrived. The shell has usually
+            # rewritten it on the way -- inside double quotes `\$` becomes `$` --
+            # so the pattern Python received is the evidence, and a bare
+            # "nothing to repeat at position 14" named neither.
+            raise ValueError(
+                f"--field {name.strip()}: {exc} in the pattern, as received: "
+                f"{pattern}\n  (quote --field in single quotes, so the shell "
+                f"leaves backslashes and $ alone)") from exc
 
 
 # A ZIP may contain the same name twice. zf.getinfo(name) resolves through

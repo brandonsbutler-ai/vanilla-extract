@@ -21,9 +21,13 @@ text = extract_file("statement.pdf")
 
 ```bash
 vanilla --batch invoices/ --csv results.csv --exceptions skipped.csv \
-    --field "invoice_no=Invoice\s*#?\s*([A-Z0-9-]+)" \
-    --field "total=Total\s*:?\s*\$?([0-9,]+\.[0-9]{2})"
+    --field 'invoice_no=Invoice\s*#?\s*([A-Z0-9-]+)' \
+    --field 'total=Total\s*:?\s*\$?([0-9,]+\.[0-9]{2})'
 ```
+
+Quote each `--field` in **single** quotes. Inside double quotes bash rewrites `\$` to `$` before the
+pattern arrives, and the regex no longer means what was typed. A pattern that will not compile is
+refused with the field's name and the pattern exactly as received, and exit status 2.
 
 **Or let it find the fields itself**, which is the point when the client has 400 documents and no
 idea what regex to write:
@@ -413,8 +417,8 @@ Every option the command accepts. `--help` prints the same list.
 Two layers, both runnable:
 
 ```bash
-python3 -m unittest discover -s tests -v     # 129 unit tests
-python3 verify_e2e.py                        # 183 end-to-end claim checks
+python3 -m unittest discover -s tests -v     # 130 unit tests
+python3 verify_e2e.py                        # 185 end-to-end claim checks
 ```
 
 `verify_e2e.py` exists because unit tests check units, not promises. It generates a fresh corpus
@@ -433,7 +437,7 @@ figures here are whatever it last measured, not what would read best.
 python3 -m unittest discover -s tests -v
 ```
 
-129 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
+130 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
 there is nothing opaque in the repo. The suite covers the cases that actually break extractors:
 balanced parens inside PDF strings, escaped close-parens, octal escapes, odd hex nibbles,
 RTF `\fonttbl` contents leaking into output, cp1252 fallback, and misnamed files -- plus the
