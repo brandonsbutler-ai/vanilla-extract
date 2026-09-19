@@ -30,7 +30,6 @@ import datetime
 import hashlib
 import json
 import os
-import re
 import shutil
 
 from .batch import csv_safe
@@ -80,10 +79,12 @@ def _safe_member(name, content_hash=None):
     # batch labels the second of two same-named archive members "dup.txt#2".
     # Sanitised as-is that became "dup.txt_2" -- an extension nothing opens --
     # so the number moves onto the stem: "dup_2".
-    dup = re.fullmatch(r"(.+)#(\d+)", base)
+    # (Split, not a regex: `(.+)#(\d+)` backtracks quadratically on a long
+    # name with no '#', which verify_e2e measures and refuses.)
+    head, sep, tail = base.rpartition("#")
     number = ""
-    if dup:
-        base, number = dup.group(1), f"_{dup.group(2)}"
+    if sep and head and tail.isdigit():
+        base, number = head, f"_{tail}"
     base = "".join(c if (c.isalnum() or c in "._- ") else "_" for c in base).strip()
     base = base or "document"
     digest = (content_hash
