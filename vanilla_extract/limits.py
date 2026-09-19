@@ -52,6 +52,14 @@ MAX_PDF_STREAM_BYTES = 64 * 1024 * 1024     # 64 MB
 # archive budget above. Beyond it the member is reported, never dropped.
 MAX_ARCHIVE_DEPTH = 8
 
+# What one archive on disk may stand for, counted across every nesting level
+# as the batch walk goes: members, and their DECLARED uncompressed bytes. Depth
+# alone does not bound it -- 16 copies nested five deep is 1,048,576 documents
+# from 23 KB -- so past either figure the rest of the archive is reported as
+# one limit_exceeded row. 20,000 documents is a very large delivery.
+MAX_ARCHIVE_MEMBERS = 20_000
+MAX_ARCHIVE_WALK_BYTES = MAX_ARCHIVE_BYTES
+
 
 class ArchiveTooLarge(Exception):
     """An archive member exceeded a size or compression-ratio limit.

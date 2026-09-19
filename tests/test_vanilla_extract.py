@@ -2069,6 +2069,68 @@ class TestEveryInputIsAccountedFor(unittest.TestCase):
         self.assertEqual(results, [])
         self.assertEqual([e["reason"] for e in exceptions], ["limit_exceeded"])
 
+    @staticmethod
+    def _fan(fanout, depth, leaf=b"hello " * 10):
+        """The reviewer's construction: every level holds `fanout` copies of the
+        level below, so a few KB stand for fanout**depth documents."""
+        cur = _zip_bytes({"leaf.txt": leaf})
+        for level in range(depth):
+            cur = _zip_bytes({f"l{level}_{i}.zip": cur for i in range(fanout)})
+        return cur
+
+    def _one(self, name, data):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        with open(os.path.join(d, name), "wb") as fh:
+            fh.write(data)
+        return d
+
+    def test_a_fan_out_archive_stops_at_the_member_budget_with_one_row(self):
+        """A 23 KB zip (fanout 16, depth 5) became 1,048,576 rows in 138 s."""
+        from unittest import mock
+        from vanilla_extract import limits
+        from vanilla_extract.batch import run
+        d = self._one("fan.zip", self._fan(4, 3))                 # 64 leaves
+        with mock.patch.object(limits, "MAX_ARCHIVE_MEMBERS", 20):
+            results, exceptions = run([d])
+        self.assertLessEqual(len(results), 20)
+        self.assertEqual([e["reason"] for e in exceptions], ["limit_exceeded"])
+        self.assertIn("20", exceptions[0]["detail"])
+
+    def test_the_member_budget_counts_uncompressed_bytes_across_levels(self):
+        from unittest import mock
+        from vanilla_extract import limits
+        from vanilla_extract.batch import run
+        leaf = os.urandom(5000).hex().encode()        # 10 KB, compresses ~2:1
+        d = self._one("fan.zip", self._fan(4, 2, leaf=leaf))            # 16 x 10 KB
+        with mock.patch.object(limits, "MAX_ARCHIVE_WALK_BYTES", 50_000):
+            results, exceptions = run([d])
+        self.assertLess(len(results), 16)
+        self.assertEqual([e["reason"] for e in exceptions], ["limit_exceeded"])
+
+    def test_the_reviewers_fan_out_finishes_bounded(self):
+        """fanout 16 depth 4 -- 65,536 leaves in 17 KB -- at the real limit."""
+        import time
+        from vanilla_extract.batch import run
+        from vanilla_extract.limits import MAX_ARCHIVE_MEMBERS
+        d = self._one("fan.zip", self._fan(16, 4))
+        start = time.thread_time()
+        results, exceptions = run([d], include_text=False)
+        self.assertLessEqual(len(results), MAX_ARCHIVE_MEMBERS)
+        self.assertEqual([e["reason"] for e in exceptions], ["limit_exceeded"])
+        self.assertLess(time.thread_time() - start, 60)
+
+    def test_an_archive_is_opened_once_not_once_per_member(self):
+        """Re-opening the ZipFile for every member parses the whole central
+        directory each time: 8,000 members took 197 s."""
+        from unittest import mock
+        from vanilla_extract.batch import run
+        d = self._one("wide.zip", _zip_bytes({f"f{i}.txt": "x" for i in range(300)}))
+        with mock.patch.object(zipfile, "ZipFile", wraps=zipfile.ZipFile) as opened:
+            results, _ = run([d])
+        self.assertEqual(len(results), 300)
+        self.assertLessEqual(opened.call_count, 5)
+
     def test_single_file_mode_reads_a_nested_zip_and_names_what_it_skips(self):
         path = os.path.join(self._tree(), "bundle.zip")
         got = {name: (text, err) for name, text, err in extract_archive(path)}

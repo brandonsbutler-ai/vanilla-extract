@@ -24,7 +24,7 @@ import re
 import zipfile
 
 from . import UnsupportedFormat, extract, extract_file
-from . import dispatch, fileinfo, recognize
+from . import dispatch, fileinfo, limits, recognize
 from .dispatch import explain_empty, skip_reason, zip_holds_document
 from .limits import (MAX_ARCHIVE_DEPTH, ArchiveTooLarge, Budget, StreamTooLarge,
                      read_member)
@@ -67,12 +67,14 @@ class Skip:
 
 
 class Member(tuple):
-    """(container, info, top): an archive member. `container` is the archive's
-    path, or its bytes when it was itself found inside an archive; `top` is the
+    """(zf, info, top): an archive member. `zf` is its archive, ALREADY OPEN --
+    the walk opens each archive once and holds it while the run reads the
+    member, because re-opening a ZipFile re-parses its whole central directory
+    and doing that per member made 8,000 members take 197 s. `top` is the
     archive on disk, whose one budget every nested read spends from."""
 
-    def __new__(cls, container, info, top):
-        return super().__new__(cls, (container, info, top))
+    def __new__(cls, zf, info, top):
+        return super().__new__(cls, (zf, info, top))
 
 
 def _zip(container):
@@ -169,50 +171,75 @@ def _walk(paths, recurse_archives=True):
     A hidden directory (.from_client/) is reported rather than read, because a
     dot-name is how tooling hides itself; naming it on the command line reads it.
     """
-    def _archive(container, prefix, top, depth):
+    def _archive(container, prefix, top, depth, spent=None):
+        # One budget per archive on disk, across every nesting level: members
+        # yielded and their declared uncompressed bytes. A 23 KB zip nesting 16
+        # copies five deep stood for 1,048,576 documents; past the budget the
+        # rest is ONE limit_exceeded row, not a million.
+        spent = spent if spent is not None else {"members": 0, "bytes": 0, "stop": False}
         try:
-            with _zip(container) as zf:
-                members = [i for i in zf.infolist() if not i.is_dir()]
+            zf = _zip(container)
         except (zipfile.BadZipFile, OSError, RuntimeError):
             yield prefix, None
             return
-        for i, info in enumerate(members):
-            dup = sum(1 for m in members[:i] if m.filename == info.filename)
-            suffix = f"#{dup + 1}" if dup else ""
-            label = f"{prefix}!{info.filename}{suffix}"
-            member = Member(container, info, top)
-            try:
-                with _zip(container) as zf, zf.open(info) as fh:
-                    head = fh.read(1024)
-            except (zipfile.BadZipFile, OSError, RuntimeError, ValueError):
-                head = b""          # encrypted or damaged: extraction reports it
-            if not head.startswith(b"PK"):
-                why = skip_reason(info.filename, head)
-                yield label, (Skip(*why, member=member) if why else member)
-                continue
-            # A zip signature: an office document, or an archive to open.
-            try:
-                with _zip(container) as zf:
+        with zf:
+            members = [i for i in zf.infolist() if not i.is_dir()]
+            seen = {}
+            for info in members:
+                if spent["stop"]:
+                    return
+                if (spent["members"] >= limits.MAX_ARCHIVE_MEMBERS or
+                        spent["bytes"] + info.file_size > limits.MAX_ARCHIVE_WALK_BYTES):
+                    spent["stop"] = True
+                    yield top, Skip(
+                        "limit_exceeded",
+                        f"the archive holds more than it may: {spent['members']:,} "
+                        f"members read (limit {limits.MAX_ARCHIVE_MEMBERS:,}), "
+                        f"{spent['bytes'] // (1024 * 1024):,} MB declared across all "
+                        f"levels (limit {limits.MAX_ARCHIVE_WALK_BYTES // (1024 * 1024):,} MB); "
+                        f"the rest, from {prefix}!{info.filename} on, was not read")
+                    return
+                spent["bytes"] += info.file_size
+                seen[info.filename] = seen.get(info.filename, 0) + 1
+                suffix = f"#{seen[info.filename]}" if seen[info.filename] > 1 else ""
+                label = f"{prefix}!{info.filename}{suffix}"
+                member = Member(zf, info, top)
+                try:
+                    with zf.open(info) as fh:
+                        head = fh.read(1024)
+                except (zipfile.BadZipFile, OSError, RuntimeError, ValueError):
+                    head = b""      # encrypted or damaged: extraction reports it
+                if not head.startswith(b"PK"):
+                    spent["members"] += 1
+                    why = skip_reason(info.filename, head)
+                    yield label, (Skip(*why, member=member) if why else member)
+                    continue
+                # A zip signature: an office document, or an archive to open.
+                try:
                     data = read_member(zf, info, _budget_for(top))
-            except ArchiveTooLarge as exc:
-                yield label, Skip("archive_bomb", str(exc), member=member)
-                continue
-            except (zipfile.BadZipFile, OSError, RuntimeError) as exc:
-                yield label, Skip("unreadable", f"{type(exc).__name__}: {exc}",
-                                  member=member)
-                continue
-            if zip_holds_document(data) or not zipfile.is_zipfile(io.BytesIO(data)):
-                # A peek, not the read: extraction reads it again and spends
-                # then, so the archive budget must not be charged twice.
-                _budget_for(top).remaining += len(data)
-                why = skip_reason(info.filename, head, lambda: data)
-                yield label, (Skip(*why, member=member) if why else member)
-            elif depth + 1 > MAX_ARCHIVE_DEPTH:
-                yield label, Skip("limit_exceeded",
-                                  f"archive nested more than {MAX_ARCHIVE_DEPTH} "
-                                  f"deep; not opened", member=member)
-            else:
-                yield from _archive(data, label, top, depth + 1)
+                except ArchiveTooLarge as exc:
+                    spent["members"] += 1
+                    yield label, Skip("archive_bomb", str(exc), member=member)
+                    continue
+                except (zipfile.BadZipFile, OSError, RuntimeError) as exc:
+                    spent["members"] += 1
+                    yield label, Skip("unreadable", f"{type(exc).__name__}: {exc}",
+                                      member=member)
+                    continue
+                if zip_holds_document(data) or not zipfile.is_zipfile(io.BytesIO(data)):
+                    # A peek, not the read: extraction reads it again and spends
+                    # then, so the archive budget must not be charged twice.
+                    _budget_for(top).remaining += len(data)
+                    spent["members"] += 1
+                    why = skip_reason(info.filename, head, lambda: data)
+                    yield label, (Skip(*why, member=member) if why else member)
+                elif depth + 1 > MAX_ARCHIVE_DEPTH:
+                    spent["members"] += 1
+                    yield label, Skip("limit_exceeded",
+                                      f"archive nested more than {MAX_ARCHIVE_DEPTH} "
+                                      f"deep; not opened", member=member)
+                else:
+                    yield from _archive(data, label, top, depth + 1, spent)
 
     def _file(full):
         if full.lower().endswith(SKIP_EXT):
@@ -261,9 +288,8 @@ def _load(label, source):
     archive the original alongside what was read from it."""
     if source is None:
         return extract_file(label), label, None
-    container, info, top = source
-    with _zip(container) as zf:
-        data = read_member(zf, info, _budget_for(top))
+    zf, info, top = source
+    data = read_member(zf, info, _budget_for(top))
     return (extract(data, os.path.basename(info.filename.replace("\\", "/"))),
             None, data)
 
@@ -283,9 +309,8 @@ def _archive_failure(workspace, label, meta, source, reason):
     src_bytes = None
     if source is not None:
         try:
-            container, info, top = source
-            with _zip(container) as zf:
-                src_bytes = read_member(zf, info, _budget_for(top))
+            zf, info, top = source
+            src_bytes = read_member(zf, info, _budget_for(top))
         except Exception:                 # noqa: BLE001 - best effort only
             src_bytes = None
     try:

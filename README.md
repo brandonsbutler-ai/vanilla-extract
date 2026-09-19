@@ -113,7 +113,10 @@ is checked by its bytes first, so a PDF renamed `.jpg` is read; a real image is 
 `__pycache__`, virtualenvs, tool caches) are not walked, but each is listed as
 `excluded_directory` with the number of files it holds; any other hidden directory is listed as
 `hidden_directory` -- name it on the command line to read it. A zip inside a zip is opened, up to
-eight levels deep; past that it is listed as `limit_exceeded`.
+eight levels deep; past that it is listed as `limit_exceeded`. One archive on disk may stand for at
+most 20,000 documents and 1 GB of declared content across all its levels -- 16 copies nested five
+deep is a million documents in 23 KB -- and past either figure the rest of it is one
+`limit_exceeded` row.
 
 ## Formats
 
@@ -510,7 +513,7 @@ Every option the command accepts. `--help` prints the same list.
 Two layers, both runnable:
 
 ```bash
-python3 -m unittest discover -s tests -v     # 170 unit tests
+python3 -m unittest discover -s tests -v     # 174 unit tests
 python3 verify_e2e.py                        # 188 end-to-end claim checks
 ```
 
@@ -530,7 +533,7 @@ figures here are whatever it last measured, not what would read best.
 python3 -m unittest discover -s tests -v
 ```
 
-170 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
+174 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
 there is nothing opaque in the repo. The suite covers the cases that actually break extractors:
 balanced parens inside PDF strings, escaped close-parens, octal escapes, odd hex nibbles,
 RTF `\fonttbl` contents leaking into output, cp1252 fallback, and misnamed files -- plus the
