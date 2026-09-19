@@ -160,6 +160,17 @@ specific exception instead:
   characters. Raised only when *nothing* survives; a page mixing an unmapped decorative heading
   with readable body text keeps the body.
 - **`UnsupportedFormat`** — neither content nor extension identifies a handler.
+- **`NoTextFound`** — the document was read and nothing came out. `extract_file()` still returns
+  `""` for such a file by default, because an empty `.txt` is a legitimate answer; call
+  `extract_file(path, require_text=True)` to get this exception instead, with `.reason` set to
+  `empty_file`, `truncated_or_corrupt`, `limit_exceeded` or `no_text_found` and `.detail` saying
+  which in words. `explain_empty(data, filename)` answers the same question for bytes in hand.
+
+On the command line, `vanilla file.pdf` and `vanilla --json file.pdf` exit **1** when a file -- or
+any member of an archive -- produced no text, with the reason on stderr (and as `reason` and
+`detail` fields in the JSON record); **2** for a usage error, such as a `--field` pattern that
+will not compile; **0** otherwise. `--batch` is different on purpose: an unreadable document is a
+row in the exceptions table, a reported result rather than a failed run, and it exits 0.
 
 ## Known limits
 
@@ -425,7 +436,7 @@ Every option the command accepts. `--help` prints the same list.
 Two layers, both runnable:
 
 ```bash
-python3 -m unittest discover -s tests -v     # 139 unit tests
+python3 -m unittest discover -s tests -v     # 144 unit tests
 python3 verify_e2e.py                        # 186 end-to-end claim checks
 ```
 
@@ -445,7 +456,7 @@ figures here are whatever it last measured, not what would read best.
 python3 -m unittest discover -s tests -v
 ```
 
-139 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
+144 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
 there is nothing opaque in the repo. The suite covers the cases that actually break extractors:
 balanced parens inside PDF strings, escaped close-parens, octal escapes, odd hex nibbles,
 RTF `\fonttbl` contents leaking into output, cp1252 fallback, and misnamed files -- plus the

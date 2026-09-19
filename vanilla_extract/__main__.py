@@ -13,7 +13,10 @@ Batch a folder into a spreadsheet, with every unreadable file accounted for:
         --field 'invoice_no=Invoice\s*#?\s*([A-Z0-9-]+)' \
         --field 'total=Total\s*:?\s*\$?([0-9,]+\.[0-9]{2})'
 
-Exit status is 1 if any input failed, so it composes in a shell pipeline.
+Exit status is 1 if any input -- or any member of an archive -- produced no
+text, with the reason on stderr (and in a "reason" field with --json); 2 for a
+usage error; 0 otherwise. So it composes in a shell pipeline. --batch is the
+exception: its unreadable documents are a reported result, and it exits 0.
 """
 
 import argparse
@@ -23,7 +26,8 @@ import re
 import sys
 import zipfile
 
-from . import UnsupportedFormat, extract_archive, extract_file, __version__
+from . import (NoTextFound, UnsupportedFormat, extract_archive, extract_file,
+               __version__)
 from .batch import Field, run as run_batch, write_csv
 from .dispatch import zip_holds_document
 from .fileinfo import DATASHEET_COLUMNS
@@ -254,9 +258,13 @@ def main(argv=None):
         try:
             if zipfile.is_zipfile(path) and not zip_holds_document(path):
                 for name, text, error in extract_archive(path):
+                    if error is None and not text.strip():
+                        error = ("no_text_found: the member was read but holds "
+                                 "no extractable text")
                     if error:
                         print(f"vanilla: {path}!{name}: {error}",
                               file=sys.stderr)
+                        failed = True
                         continue
                     if args.json:
                         print(json.dumps({"file": path, "member": name,
@@ -265,12 +273,19 @@ def main(argv=None):
                         _emit_text(f"{path}!{name}", text, not args.quiet)
                 continue
 
-            text = extract_file(path)
+            text = extract_file(path, require_text=True)
             if args.json:
                 print(json.dumps({"file": path, "chars": len(text),
                                   "text": text}))
             else:
                 _emit_text(path, text, show_headers)
+        except NoTextFound as exc:
+            # Read, and nothing came out: never a blank result with exit 0.
+            print(f"vanilla: {path}: {exc.reason}: {exc.detail}", file=sys.stderr)
+            if args.json:
+                print(json.dumps({"file": path, "chars": 0, "text": "",
+                                  "reason": exc.reason, "detail": exc.detail}))
+            failed = True
         except UnsupportedFormat as exc:
             print(f"vanilla: {path}: {exc}", file=sys.stderr)
             failed = True

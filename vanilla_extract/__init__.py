@@ -15,19 +15,30 @@ import io
 import os
 import zipfile
 
-from .dispatch import (UnsupportedFormat, extract, skip_reason, sniff,
-                       zip_holds_document)
+from .dispatch import (NoTextFound, UnsupportedFormat, explain_empty, extract,
+                       skip_reason, sniff, zip_holds_document)
 from .limits import MAX_ARCHIVE_DEPTH, ArchiveTooLarge, Budget, read_member
 
 __version__ = "0.2.0"
-__all__ = ["extract", "extract_file", "extract_archive", "sniff",
-           "UnsupportedFormat", "ArchiveTooLarge", "__version__"]
+__all__ = ["extract", "extract_file", "extract_archive", "sniff", "explain_empty",
+           "UnsupportedFormat", "NoTextFound", "ArchiveTooLarge", "__version__"]
 
-def extract_file(path):
-    """Extract text from a file on disk."""
+def extract_file(path, require_text=False):
+    """Extract text from a file on disk.
+
+    Returns a string, and for a document with no text that string is empty --
+    unchanged, because an empty .txt is a legitimate answer. Pass
+    `require_text=True` to have an empty result raise NoTextFound instead,
+    carrying the reason (empty_file, truncated_or_corrupt, limit_exceeded or
+    no_text_found); `explain_empty(data, filename)` gives the same answer for
+    bytes already in hand.
+    """
     with open(path, "rb") as fh:
         data = fh.read()
-    return extract(data, os.path.basename(path))
+    text = extract(data, os.path.basename(path))
+    if require_text and not text.strip():
+        raise NoTextFound(*explain_empty(data, os.path.basename(path)))
+    return text
 
 
 def extract_archive(path, max_members=500):

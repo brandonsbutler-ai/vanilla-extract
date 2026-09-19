@@ -1929,6 +1929,62 @@ class TestWhyADocumentCameBackEmpty(unittest.TestCase):
             self.assertNotIn("OCR", got[name][1], name)
 
 
+class TestEmptyOutsideBatch(unittest.TestCase):
+    """`vanilla file.pdf`, `--json` and extract_file() returned "" with exit 0
+    for an empty, truncated or scanned PDF -- the blank result the batch path
+    already refused to produce."""
+
+    def _file(self, name, data):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        path = os.path.join(d, name)
+        with open(path, "wb") as fh:
+            fh.write(data)
+        return path
+
+    def _cli(self, *argv):
+        import contextlib
+        from vanilla_extract.__main__ import main
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = main(list(argv))
+        return rc, out.getvalue(), err.getvalue()
+
+    def test_the_cli_says_why_and_exits_1(self):
+        rc, out, err = self._cli(self._file("zero.pdf", b""))
+        self.assertEqual(rc, 1)
+        self.assertIn("empty_file", err)
+        self.assertEqual(out.strip(), "")
+
+    def test_json_carries_the_reason(self):
+        import json
+        rc, out, _err = self._cli("--json", self._file("scan.pdf", SCAN_PDF))
+        self.assertEqual(rc, 1)
+        record = json.loads(out)
+        self.assertEqual((record["text"], record["reason"]), ("", "no_text_found"))
+        self.assertIn("OCR", record["detail"])
+
+    def test_an_empty_member_of_an_archive_is_reported_too(self):
+        path = self._file("a.zip", _zip_bytes({"blank.txt": "  \n", "ok.txt": "text"}))
+        rc, out, err = self._cli(path)
+        self.assertEqual(rc, 1)
+        self.assertIn("blank.txt: no_text_found", err)
+        self.assertIn("text", out)
+
+    def test_a_readable_file_still_exits_0(self):
+        rc, out, err = self._cli(self._file("ok.txt", b"Invoice Number: INV-1\n"))
+        self.assertEqual((rc, err), (0, ""))
+
+    def test_extract_file_keeps_returning_a_string_unless_asked(self):
+        from vanilla_extract import NoTextFound, extract_file
+        whole = make_pdf("BT (Invoice Number: INV-9 and more) Tj ET")
+        path = self._file("cut.pdf", whole[:whole.index(b"stream") + 20])
+        self.assertEqual(extract_file(path), "")
+        with self.assertRaises(NoTextFound) as caught:
+            extract_file(path, require_text=True)
+        self.assertEqual(caught.exception.reason, "truncated_or_corrupt")
+
+
 def _chromium():
     """A headless Chromium through Playwright, or None where it is not installed.
 

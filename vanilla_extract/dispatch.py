@@ -17,6 +17,19 @@ class UnsupportedFormat(Exception):
     """Raised when neither the content nor the extension identifies a handler."""
 
 
+class NoTextFound(Exception):
+    """A document was read and nothing came out of it.
+
+    `reason` is one of empty_file, truncated_or_corrupt, limit_exceeded or
+    no_text_found -- the same names the batch exceptions table uses -- and
+    `detail` says which, in words. Raised by extract_file(require_text=True).
+    """
+
+    def __init__(self, reason, detail):
+        super().__init__(f"{reason}: {detail}")
+        self.reason, self.detail = reason, detail
+
+
 # Extension -> handler, used only when the magic bytes are inconclusive.
 _BY_EXT = {
     ".pdf": pdf.extract_pdf,
