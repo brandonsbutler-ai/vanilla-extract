@@ -15,9 +15,8 @@ URL, e-mailable, no server -- containing:
   * a button that exports the corrected table back out as CSV.
 
 Edits are not written into the file -- a file:// page cannot write itself.
-They live in the browser (a copy in localStorage keyed to this report, where
-the browser allows it) until exported, and leaving with unexported edits asks
-first. Nothing is sent anywhere -- there is nowhere to send it to -- so a client can review a delivery containing their own sensitive
+They live in the tab (sessionStorage, keyed to this report) until exported or
+the tab closes, and leaving with unexported edits asks first. Nothing is sent anywhere -- there is nowhere to send it to -- so a client can review a delivery containing their own sensitive
 documents without it leaving their machine.
 """
 
@@ -25,6 +24,7 @@ import datetime
 import hashlib
 import html
 import json
+import secrets
 
 
 _CSS = """
@@ -90,26 +90,31 @@ pre{margin:0;padding:16px;white-space:pre-wrap;overflow-wrap:anywhere;
 
 _JS = """
 const DOCS = __DOCS__;
-// A file:// page cannot write itself, so corrections live in this browser
-// until they are exported. Two things keep them from vanishing silently: a
-// copy in localStorage, and a prompt before leaving with unexported edits.
-// The store is KEYED to this report. Chrome gives every file:// page the
-// same origin, so an unkeyed store would pour one delivery's corrections
-// into the next report opened. Storage may also throw outright (private
-// windows, locked-down profiles); the page must work without it.
+// A file:// page cannot write itself, so corrections live in this TAB until
+// they are exported or the tab closes. sessionStorage, not localStorage: it
+// survives a reload, but not a browser restart, and no other tab or page can
+// read it -- a delivery's corrections do not linger on the machine. Leaving
+// with unexported edits asks first, and a successful export empties the
+// store. The key carries this report's content hash and a random nonce drawn
+// when it was generated, so two reports can never share one. Storage may also
+// throw outright (private windows, locked-down profiles); the page must work
+// without it.
 const STORE_KEY = 'vanilla-extract:review:__REPORT_ID__';
 function loadEdits(){
-  try{ return JSON.parse(localStorage.getItem(STORE_KEY) || 'null') || {cells:{}, exported:false}; }
-  catch(e){ return {cells:{}, exported:false}; }
+  try{ return JSON.parse(sessionStorage.getItem(STORE_KEY) || 'null') || {cells:{}}; }
+  catch(e){ return {cells:{}}; }
 }
 function saveEdits(){
   try{
-    if(Object.keys(EDITS.cells).length) localStorage.setItem(STORE_KEY, JSON.stringify(EDITS));
-    else localStorage.removeItem(STORE_KEY);
+    if(Object.keys(EDITS.cells).length) sessionStorage.setItem(STORE_KEY, JSON.stringify(EDITS));
+    else sessionStorage.removeItem(STORE_KEY);
   }catch(e){}
 }
+function clearStore(){
+  try{ sessionStorage.removeItem(STORE_KEY); }catch(e){}
+}
 const EDITS = loadEdits();
-let unexported = Object.keys(EDITS.cells).length > 0 && !EDITS.exported;
+let unexported = Object.keys(EDITS.cells).length > 0;
 const COLS = [...document.querySelectorAll('#resultshead th')].map(th=>th.dataset.col);
 let restored = 0;
 document.querySelectorAll('#results tr').forEach((tr,r)=>{
@@ -125,7 +130,6 @@ document.querySelectorAll('#results tr').forEach((tr,r)=>{
       td.classList.toggle('edited', td.textContent !== original);
       if(td.textContent === original) delete EDITS.cells[key];
       else EDITS.cells[key] = td.textContent;
-      EDITS.exported = false;
       unexported = true;
       saveEdits();
     });
@@ -134,7 +138,7 @@ document.querySelectorAll('#results tr').forEach((tr,r)=>{
 if(restored){
   const note = document.getElementById('restored');
   note.firstChild.textContent = restored + ' correction' + (restored === 1 ? '' : 's') +
-    ' restored from this browser' + (EDITS.exported ? '.' : ', not yet exported.') + ' ';
+    ' restored in this tab, not yet exported. ';
   note.hidden = false;
   document.getElementById('discard').addEventListener('click',()=>{
     EDITS.cells = {}; unexported = false; saveEdits(); location.reload();
@@ -196,9 +200,8 @@ document.getElementById('export')?.addEventListener('click',()=>{
   a.download='corrected.csv';
   a.click();
   URL.revokeObjectURL(a.href);
-  EDITS.exported = true;
   unexported = false;
-  saveEdits();
+  clearStore();           // exported: nothing left for this tab to keep
 });
 """
 
@@ -307,12 +310,13 @@ def write_report(results, exceptions, path, columns=None, title="Extraction repo
     total = len(results) + len(exceptions)
     rate = f"{100 * len(results) / total:.0f}%" if total else "--"
     stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-    # What the browser keys saved corrections to: this report's cells and the
-    # moment it was generated, so a different report -- even one written over
-    # the same file name -- never inherits them.
+    # What the tab keys saved corrections to: this report's cells, the moment
+    # it was generated, and a random nonce -- so a different report, even one
+    # of the same data written over the same file name in the same minute,
+    # never inherits them.
     report_id = hashlib.sha256(json.dumps(
         [stamp, columns, [[str(r.get(c, "")) for c in columns] for r in results]]
-    ).encode("utf-8")).hexdigest()[:24]
+    ).encode("utf-8")).hexdigest()[:24] + "-" + secrets.token_hex(8)
 
     exc_section = (
         f'<h2>Could not be read <span class="count">({len(exceptions)})</span></h2>'
@@ -327,7 +331,7 @@ def write_report(results, exceptions, path, columns=None, title="Extraction repo
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>{_esc(title)}</title><style>{_CSS}</style></head><body><div class="wrap">
 <h1>{_esc(title)}</h1>
-<div class="sub">Generated {stamp} by vanilla-extract. Edits are not saved into this file: they live in this browser until you export them. Nothing is uploaded.</div>
+<div class="sub">Generated {stamp} by vanilla-extract. Edits live in this tab until you export them or close the tab; nothing is saved to disk or uploaded.</div>
 <div class="note" id="restored" hidden><span></span><button id="discard">Discard them</button></div>
 <div class="stats">
   <div class="stat"><b>{len(results)}</b><span>documents read</span></div>

@@ -2478,7 +2478,44 @@ class TestReviewPageInABrowser(unittest.TestCase):
         write_report(self.ROWS, [], path)
         text = page_of(path).text
         self.assertNotIn("Edits stay in this file", text)
-        self.assertIn("until you export", text)
+        self.assertIn("live in this tab until you export them or close the tab", text)
+        self.assertIn("nothing is saved to disk or uploaded", text)
+
+    def test_two_reports_of_the_same_data_in_the_same_minute_use_different_keys(self):
+        import re as _re
+        from vanilla_extract.report import write_report
+        keys = []
+        for name in ("a.html", "b.html"):
+            path = os.path.join(self.dir, name)
+            write_report(self.ROWS, [], path)
+            keys.append(_re.search(r"STORE_KEY = '([^']+)'", page_of(path).script_text).group(1))
+        self.assertNotEqual(keys[0], keys[1])
+
+    def test_another_tab_cannot_read_the_corrections(self):
+        """Owner decision: per-tab sessionStorage, not localStorage, which any
+        file:// page in the browser could read and which outlives a restart."""
+        page = self.ctx.new_page()
+        url = self._report()
+        page.goto(url)
+        self._edit(page, "$9.99")
+        other = self.ctx.new_page()
+        other.goto(url)                       # the same report, a new tab
+        cell = other.locator("#results tr").first.locator("td[contenteditable]").first
+        self.assertEqual(cell.inner_text().strip(), "$5.00")
+        stranger = self.ctx.new_page()
+        stranger.goto(self._report(name="other.html"))
+        leaked = stranger.evaluate(
+            "JSON.stringify(Object.assign({}, localStorage)) + JSON.stringify(Object.assign({}, sessionStorage))")
+        self.assertNotIn("9.99", leaked)
+        self.assertEqual(page.evaluate("localStorage.length"), 0)
+
+    def test_the_store_is_emptied_by_a_successful_export(self):
+        page = self.ctx.new_page()
+        page.goto(self._report())
+        self._edit(page, "$9.99")
+        self.assertGreater(page.evaluate("sessionStorage.length"), 0)
+        self._export(page)
+        self.assertEqual(page.evaluate("sessionStorage.length"), 0)
 
     def test_leaving_with_unexported_edits_asks_first(self):
         page = self.ctx.new_page()
@@ -2602,7 +2639,8 @@ class TestReviewPageInABrowser(unittest.TestCase):
     def test_the_page_works_when_storage_throws(self):
         """Private windows and locked-down browsers refuse localStorage."""
         self.ctx.add_init_script(
-            "Object.defineProperty(window, 'localStorage', "
+            "for (const k of ['localStorage', 'sessionStorage']) "
+            "Object.defineProperty(window, k, "
             "{get(){ throw new DOMException('denied', 'SecurityError'); }});")
         page = self.ctx.new_page()
         errors = []

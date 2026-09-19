@@ -96,10 +96,12 @@ characters it left out and where the full text is. Embedding everything once tur
 JSON file into a 155 MB report that took over ten seconds to open; the same delivery now makes a
 4 MB report that opens in under a second.
 
-**Export is the save.** A page opened from disk cannot write itself, so corrections are not stored
-in the HTML file. They live in the browser until exported: where the browser allows it, a copy is
-kept in its local storage, keyed to that one report so another report never inherits it, and
-reloading or closing the tab with unexported corrections asks first.
+**Export is the save.** Edits live in this tab until you export them or close the tab; nothing is
+saved to disk or uploaded. A page opened from disk cannot write itself, so the corrections are kept
+in the tab's session storage: they survive a reload, but not closing the tab or restarting the
+browser, and no other tab or page can read them. The store is keyed to that one report (its content
+and a random value drawn when it was generated), a successful export empties it, and reloading or
+closing the tab with unexported corrections asks first.
 
 One row per document, one column per field, and **a second table naming every file that could not
 be read and why**. That second table is the point: encrypted PDFs, scans with no
@@ -515,7 +517,7 @@ Every option the command accepts. `--help` prints the same list.
 Two layers, both runnable:
 
 ```bash
-python3 -m unittest discover -s tests -v     # 175 unit tests
+python3 -m unittest discover -s tests -v     # 178 unit tests
 python3 verify_e2e.py                        # 188 end-to-end claim checks
 ```
 
@@ -535,7 +537,7 @@ figures here are whatever it last measured, not what would read best.
 python3 -m unittest discover -s tests -v
 ```
 
-175 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
+178 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
 there is nothing opaque in the repo. The suite covers the cases that actually break extractors:
 balanced parens inside PDF strings, escaped close-parens, octal escapes, odd hex nibbles,
 RTF `\fonttbl` contents leaking into output, cp1252 fallback, and misnamed files -- plus the
