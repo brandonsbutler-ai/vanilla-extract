@@ -194,6 +194,24 @@ def sniff(data, filename=""):
     raise UnsupportedFormat(f"unrecognized format: {filename or 'input'}")
 
 
+def reason_of(exc):
+    """(reason, detail) naming a failure the way the batch exceptions table
+    does, so the CLI, --json, extract_archive() and the table agree."""
+    from .limits import ArchiveTooLarge, StreamTooLarge
+    if isinstance(exc, NoTextFound):
+        return exc.reason, exc.detail
+    for types, code in ((pdf.EncryptedPDF, "encrypted"),
+                        (pdf.UndecodableText, "undecodable_fonts"),
+                        (UnsupportedFormat, "unsupported_format"),
+                        (StreamTooLarge, "limit_exceeded"),
+                        (ArchiveTooLarge, "archive_bomb")):
+        if isinstance(exc, types):
+            return code, str(exc)
+    if isinstance(exc, (OSError, zipfile.BadZipFile)):
+        return "unreadable", f"{type(exc).__name__}: {exc}"
+    return "error", f"{type(exc).__name__}: {exc}"
+
+
 def explain_empty(data, filename=""):
     """(reason, detail) for a document whose extraction came back empty.
 

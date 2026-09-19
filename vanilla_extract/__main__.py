@@ -13,10 +13,12 @@ Batch a folder into a spreadsheet, with every unreadable file accounted for:
         --field 'invoice_no=Invoice\s*(?:Number|No\.?|#)\s*:?\s*([A-Z]+-[0-9]+)' \
         --field 'total=Total\s*:?\s*\$?([0-9,]+\.[0-9]{2})'
 
-Exit status is 1 if any input -- or any member of an archive -- produced no
-text, with the reason on stderr (and in a "reason" field with --json); 2 for a
-usage error; 0 otherwise. So it composes in a shell pipeline. --batch is the
-exception: its unreadable documents are a reported result, and it exits 0.
+Exit status: 2 for a usage error (a bad option or --field, a path that does
+not exist, a folder without --batch); 1 if any document -- or any member of an
+archive -- could not be read or yielded no text, with the reason on stderr (and
+as "reason"/"detail" in a --json record); 0 otherwise. So it composes in a
+shell pipeline. --batch is the exception: its unreadable documents are a
+reported result, and it exits 0.
 """
 
 import argparse
@@ -26,8 +28,8 @@ import re
 import sys
 import zipfile
 
-from . import (NoTextFound, UnsupportedFormat, extract_archive, extract_file,
-               __version__)
+from . import extract_archive, extract_file, __version__
+from .dispatch import reason_of
 from .batch import Field, run as run_batch, write_csv
 from .dispatch import zip_holds_document
 from .fileinfo import DATASHEET_COLUMNS
@@ -270,27 +272,37 @@ def main(argv=None):
         return _run_batch(args)
 
     show_headers = len(args.paths) > 1 and not args.quiet
-    failed = False
+    failed = False          # a document could not be read, or yielded no text
+    usage = False           # the command named something that is not a file
+
+    def fail(path, reason, detail, member=None):
+        """One failure, named the way the batch exceptions table names it --
+        on stderr, and as a record in --json output."""
+        where = f"{path}!{member}" if member is not None else path
+        print(f"vanilla: {where}: {reason}: {detail}", file=sys.stderr)
+        if args.json:
+            record = {"file": path, "chars": 0, "text": "",
+                      "reason": reason, "detail": detail}
+            if member is not None:
+                record["member"] = member
+            print(json.dumps(record))
 
     for path in args.paths:
         if not os.path.exists(path):
             print(f"vanilla: {path}: no such file", file=sys.stderr)
-            failed = True
+            usage = True
             continue
         if os.path.isdir(path):
             print(f"vanilla: {path}: is a folder; use --batch to read a folder",
                   file=sys.stderr)
-            failed = True
+            usage = True
             continue
         try:
             if zipfile.is_zipfile(path) and not zip_holds_document(path):
-                for name, text, error in extract_archive(path):
-                    if error is None and not text.strip():
-                        error = ("no_text_found: the member was read but holds "
-                                 "no extractable text")
+                for name, text, error in extract_archive(path, require_text=True):
                     if error:
-                        print(f"vanilla: {path}!{name}: {error}",
-                              file=sys.stderr)
+                        reason, _sep, detail = error.partition(": ")
+                        fail(path, reason, detail, member=name)
                         failed = True
                         continue
                     if args.json:
@@ -306,22 +318,13 @@ def main(argv=None):
                                   "text": text}))
             else:
                 _emit_text(path, text, show_headers)
-        except NoTextFound as exc:
-            # Read, and nothing came out: never a blank result with exit 0.
-            print(f"vanilla: {path}: {exc.reason}: {exc.detail}", file=sys.stderr)
-            if args.json:
-                print(json.dumps({"file": path, "chars": 0, "text": "",
-                                  "reason": exc.reason, "detail": exc.detail}))
-            failed = True
-        except UnsupportedFormat as exc:
-            print(f"vanilla: {path}: {exc}", file=sys.stderr)
-            failed = True
         except Exception as exc:                      # noqa: BLE001
-            print(f"vanilla: {path}: {type(exc).__name__}: {exc}",
-                  file=sys.stderr)
+            # Read and empty (NoTextFound), unsupported, encrypted, damaged:
+            # every one named with its reason code, never a blank result.
+            fail(path, *reason_of(exc))
             failed = True
 
-    return 1 if failed else 0
+    return 2 if usage else (1 if failed else 0)
 
 
 if __name__ == "__main__":

@@ -16,7 +16,7 @@ import os
 import zipfile
 
 from .dispatch import (NoTextFound, UnsupportedFormat, explain_empty, extract,
-                       skip_reason, sniff, zip_holds_document)
+                       reason_of, skip_reason, sniff, zip_holds_document)
 from .limits import (MAX_ARCHIVE_DEPTH, ArchiveTooLarge, Budget, StreamTooLarge,
                      read_member)
 
@@ -43,7 +43,7 @@ def extract_file(path, require_text=False):
     return text
 
 
-def extract_archive(path, max_members=500):
+def extract_archive(path, max_members=500, require_text=False):
     """Extract text from every readable document inside a .zip.
 
     Yields (member_name, text_or_None, error_or_None) so a caller can report
@@ -53,20 +53,25 @@ def extract_archive(path, max_members=500):
     a member that is media or a binary is named with its reason -- both used
     to be dropped without a word.
 
+    An error reads "<reason>: <detail>", with the same reason codes as the
+    batch exceptions table. With `require_text=True` a member that yields no
+    text is an error too, named by explain_empty() exactly as batch names it.
+
     `max_members` is a guard, not a limit on ambition: a zip bomb with a
     million entries should not hang the caller.
     """
     seen = [0]
     with zipfile.ZipFile(path) as zf:
-        yield from _members(zf, "", Budget(), seen, max_members, 0)
+        yield from _members(zf, "", Budget(), seen, max_members, 0, require_text)
 
 
-def _members(zf, prefix, budget, seen, max_members, depth):
+def _members(zf, prefix, budget, seen, max_members, depth, require_text):
     """extract_archive's walk of one (possibly nested) archive. Returns True
     once the member guard stops it, so an enclosing archive stops too."""
     for info in zf.infolist():
         if seen[0] >= max_members:
-            yield ("<truncated>", None, f"stopped after {max_members} members")
+            yield ("<truncated>", None,
+                   f"limit_exceeded: stopped after {max_members} members")
             return True
         seen[0] += 1
         if info.is_dir():
@@ -85,7 +90,7 @@ def _members(zf, prefix, budget, seen, max_members, depth):
         try:
             data = read_member(zf, info, budget)
         except ArchiveTooLarge as exc:
-            yield (name, None, str(exc))
+            yield (name, None, "%s: %s" % reason_of(exc))
             continue
         except (zipfile.BadZipFile, RuntimeError) as exc:
             yield (name, None, f"unreadable: {exc}")
@@ -98,7 +103,7 @@ def _members(zf, prefix, budget, seen, max_members, depth):
                 continue
             with zipfile.ZipFile(io.BytesIO(data)) as inner:
                 stopped = yield from _members(inner, name + "!", budget, seen,
-                                              max_members, depth + 1)
+                                              max_members, depth + 1, require_text)
             if stopped:
                 return True
             continue
@@ -107,10 +112,13 @@ def _members(zf, prefix, budget, seen, max_members, depth):
             yield (name, None, f"{why[0]}: {why[1]}")
             continue
         try:
-            yield (name, extract(data, os.path.basename(name)), None)
-        except UnsupportedFormat as exc:
-            yield (name, None, str(exc))
+            text = extract(data, os.path.basename(name))
         except Exception as exc:                  # noqa: BLE001
             # One malformed member must not abort the whole archive.
-            yield (name, None, f"{type(exc).__name__}: {exc}")
+            yield (name, None, "%s: %s" % reason_of(exc))
+            continue
+        if require_text and not text.strip():
+            yield (name, None, "%s: %s" % explain_empty(data, os.path.basename(name)))
+            continue
+        yield (name, text, None)
     return False

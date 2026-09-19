@@ -131,6 +131,28 @@ most 20,000 documents and 1 GB of declared content across all its levels -- 16 c
 deep is a million documents in 23 KB -- and past either figure the rest of it is one
 `limit_exceeded` row.
 
+Every reason a file can carry, in the exceptions table, on stderr and in `--json`:
+
+| Reason | Meaning |
+|---|---|
+| `encrypted` | a PDF encrypted with the standard security handler |
+| `undecodable_fonts` | text drawn in fonts with no usable character map |
+| `unsupported_format` | neither content nor name identifies a reader |
+| `empty_file` | 0 bytes |
+| `truncated_or_corrupt` | cut off before its end, or XML that is not well-formed |
+| `no_text_found` | read, and no text in it -- for a PDF of images, a scan |
+| `limit_exceeded` | a safety limit: entity expansion, a PDF stream, archive depth or size |
+| `archive_bomb` | an archive member past the size or compression-ratio limit |
+| `unreadable` | the file could not be opened or read |
+| `error` | an unexpected failure, named with its exception |
+| `image_no_text_layer` | an image: pixels, not text (no OCR here) |
+| `not_a_document` | media, fonts, compiled code or a database |
+| `hidden_directory` | a dot-folder, not walked; name it to read it |
+| `excluded_directory` | tooling (`.git`, `__pycache__`, a virtualenv, a cache), not walked |
+| `symlink_not_followed` | a symlinked folder, not followed |
+| `unreadable_directory` | a folder that could not be listed |
+| `field_extraction_failed` | the row was kept; a field pattern failed on it |
+
 ## Formats
 
 | | |
@@ -218,12 +240,18 @@ specific exception instead:
   `""` for such a file by default, because an empty `.txt` is a legitimate answer; call
   `extract_file(path, require_text=True)` to get this exception instead, with `.reason` set to
   `empty_file`, `truncated_or_corrupt`, `limit_exceeded` or `no_text_found` and `.detail` saying
-  which in words. `explain_empty(data, filename)` answers the same question for bytes in hand.
+  which in words. `explain_empty(data, filename)` answers the same question for bytes in hand, and
+  `extract_archive(path, require_text=True)` names an empty member the same way batch does. Every
+  error `extract_archive()` yields reads `<reason>: <detail>` with the codes listed above.
 
-On the command line, `vanilla file.pdf` and `vanilla --json file.pdf` exit **1** when a file -- or
-any member of an archive -- produced no text, with the reason on stderr (and as `reason` and
-`detail` fields in the JSON record); **2** for a usage error, such as a `--field` pattern that
-will not compile or a `--batch` path that does not exist (nothing is written); **0** otherwise.
+On the command line (`vanilla file.pdf`, `vanilla --json file.pdf`, `vanilla archive.zip`):
+
+| Exit | Meaning |
+|---|---|
+| **0** | every file, and every member of every archive, produced text |
+| **1** | a document, or an archive member, could not be read or produced no text -- the reason code is on stderr, and with `--json` each such file or member is a record carrying `reason` and `detail` |
+| **2** | a usage error: a bad option or `--field` pattern, a path that does not exist, a folder given without `--batch`, a `--batch` path that does not exist (nothing is written), a missing `--import-csv` file |
+
 `--batch` is different on purpose: an unreadable document is a row in the exceptions table, a
 reported result rather than a failed run, and it exits 0.
 
@@ -526,7 +554,7 @@ Every option the command accepts. `--help` prints the same list.
 Two layers, both runnable:
 
 ```bash
-python3 -m unittest discover -s tests -v     # 181 unit tests
+python3 -m unittest discover -s tests -v     # 189 unit tests
 python3 verify_e2e.py                        # 188 end-to-end claim checks
 ```
 
@@ -546,7 +574,7 @@ figures here are whatever it last measured, not what would read best.
 python3 -m unittest discover -s tests -v
 ```
 
-181 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
+189 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
 there is nothing opaque in the repo. The suite covers the cases that actually break extractors:
 balanced parens inside PDF strings, escaped close-parens, octal escapes, odd hex nibbles,
 RTF `\fonttbl` contents leaking into output, cp1252 fallback, and misnamed files -- plus the

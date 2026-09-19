@@ -171,7 +171,7 @@ document.querySelectorAll('.view').forEach(btn=>{
 document.getElementById('dlgclose')?.addEventListener('click',()=>dlg.close());
 
 // batch._NEGATIVE_NUMBER: a plain negative amount is data, not a formula.
-const NEGATIVE_NUMBER = /^-[$£€]?(?:\\d{1,3}(?:,\\d{3})+|\\d+)(?:\\.\\d+)?%?$/;
+const NEGATIVE_NUMBER = /^-[$£€]?(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\\.[0-9]+)?%?$/;
 function csvCell(s){
   s = (s ?? '').toString();
   // Same formula-injection guard the Python writer applies: a cell starting
@@ -408,7 +408,7 @@ document.getElementById('export').addEventListener('click', () => {
   URL.revokeObjectURL(a.href);
 });
 
-const NEGATIVE_NUMBER = /^-[$£€]?(?:\\d{1,3}(?:,\\d{3})+|\\d+)(?:\\.\\d+)?%?$/;
+const NEGATIVE_NUMBER = /^-[$£€]?(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\\.[0-9]+)?%?$/;
 function csvCell(s){
   s = (s ?? '').toString();
   if(/^[=+\\-@\\t\\r]/.test(s) && !NEGATIVE_NUMBER.test(s)) s = "'" + s;

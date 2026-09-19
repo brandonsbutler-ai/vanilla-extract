@@ -57,6 +57,29 @@ _NOISE_DIRS = {".git": "version control", ".hg": "version control",
                ".pytest_cache": "tool cache", ".ruff_cache": "tool cache"}
 
 
+# Every reason a row in the exceptions table can carry, and what it means.
+# The README names each one; a test holds the two together.
+REASONS = {
+    "encrypted": "a PDF encrypted with the standard security handler",
+    "undecodable_fonts": "text drawn in fonts with no usable character map",
+    "unsupported_format": "neither content nor name identifies a reader",
+    "empty_file": "0 bytes",
+    "truncated_or_corrupt": "cut off before its end, or XML that is not well-formed",
+    "no_text_found": "read, and no text in it -- for a PDF of images, a scan",
+    "limit_exceeded": "a safety limit: entity expansion, a PDF stream, archive depth or size",
+    "archive_bomb": "an archive member past the size or compression-ratio limit",
+    "unreadable": "the file could not be opened or read",
+    "error": "an unexpected failure, named with its exception",
+    "image_no_text_layer": "an image: pixels, not text (no OCR here)",
+    "not_a_document": "media, fonts, compiled code or a database",
+    "hidden_directory": "a dot-folder, not walked; name it to read it",
+    "excluded_directory": "tooling (`.git`, `__pycache__`, a virtualenv, a cache), not walked",
+    "symlink_not_followed": "a symlinked folder, not followed",
+    "unreadable_directory": "a folder that could not be listed",
+    "field_extraction_failed": "the row was kept; a field pattern failed on it",
+}
+
+
 class Skip:
     """An input the walk accounts for without reading it."""
 
@@ -510,7 +533,9 @@ _FORMULA_LEAD = ("=", "+", "-", "@", "\t", "\r")
 # The match is a FULL match on a strict shape, so anything with an operator,
 # a letter, a space or a line break after the minus is still neutralized.
 # report.py's export applies the same pattern in the browser.
-_NEGATIVE_NUMBER = re.compile(r"-[$£€]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?%?")
+# [0-9], not \d: Python's \d also matches other scripts' digits, JavaScript's
+# does not, and the two guards must agree on every cell.
+_NEGATIVE_NUMBER = re.compile(r"-[$£€]?(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\.[0-9]+)?%?")
 
 
 def csv_safe(value):

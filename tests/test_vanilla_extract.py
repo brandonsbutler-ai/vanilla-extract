@@ -2374,7 +2374,7 @@ class TestSmallThingsFromTheJourney(unittest.TestCase):
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
         rc, _out, err = self._cli(d)
-        self.assertEqual(rc, 1)
+        self.assertEqual(rc, 2)                 # a usage error, not a bad document
         self.assertIn("is a folder", err)
         self.assertIn("--batch", err)
         self.assertNotIn("IsADirectoryError", err)
@@ -2427,6 +2427,90 @@ class TestSmallThingsFromTheJourney(unittest.TestCase):
                                env=env, capture_output=True, text=True, timeout=120)
             self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(sorted(os.listdir(prefix)), before)
+
+
+class TestOneContractForReasonsAndExits(unittest.TestCase):
+    """The CLI, --json, the library and the batch table name failures the same
+    way, and the exit code says whether the command or the document was wrong."""
+
+    def _cli(self, *argv):
+        import contextlib
+        from vanilla_extract.__main__ import main
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = main(list(argv))
+        return rc, out.getvalue(), err.getvalue()
+
+    def _file(self, name, data):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        path = os.path.join(d, name)
+        with open(path, "wb") as fh:
+            fh.write(data)
+        return path
+
+    def test_usage_errors_exit_2_and_unreadable_documents_exit_1(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        self.assertEqual(self._cli(d)[0], 2)                                  # a folder
+        self.assertEqual(self._cli(os.path.join(d, "missing.pdf"))[0], 2)     # no such path
+        self.assertEqual(self._cli(self._file("zero.pdf", b""))[0], 1)        # no text
+        self.assertEqual(self._cli(self._file("x.bin", b"\x00\x01\x02"))[0], 1)
+
+    def test_json_names_the_reason_for_an_unsupported_file(self):
+        import json
+        rc, out, _err = self._cli("--json", self._file("x.dat", b"\x00\x01\x02\x03"))
+        record = json.loads(out)
+        self.assertEqual((rc, record["reason"], record["text"]), (1, "unsupported_format", ""))
+        self.assertTrue(record["detail"])
+
+    def test_json_names_the_reason_for_a_failed_archive_member(self):
+        import json
+        path = self._file("a.zip", _zip_bytes({"ok.txt": "fine", "pic.png": PNG,
+                                               "blank.txt": ""}))
+        rc, out, _err = self._cli("--json", path)
+        records = {r["member"]: r for r in map(json.loads, out.splitlines())}
+        self.assertEqual(rc, 1)
+        self.assertEqual(records["ok.txt"]["text"], "fine")
+        self.assertEqual(records["pic.png"]["reason"], "image_no_text_layer")
+        self.assertEqual(records["blank.txt"]["reason"], "empty_file")
+
+    def test_an_empty_member_has_the_same_reason_in_both_modes(self):
+        from vanilla_extract.batch import run
+        path = self._file("a.zip", _zip_bytes({"blank.txt": "", "cut.pdf": b"%PDF-1.4\n1 0 obj"}))
+        _, exceptions = run([path])
+        batch = {e["file"].rsplit("!", 1)[1]: e["reason"] for e in exceptions}
+        single = {name: err.split(":", 1)[0]
+                  for name, _t, err in extract_archive(path, require_text=True) if err}
+        self.assertEqual(batch, single)
+        self.assertEqual(batch, {"blank.txt": "empty_file", "cut.pdf": "truncated_or_corrupt"})
+
+    def test_every_reason_code_is_named_in_the_readme(self):
+        from vanilla_extract.batch import REASONS
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        readme = open(os.path.join(root, "README.md"), encoding="utf-8").read()
+        self.assertEqual([c for c in REASONS if f"`{c}`" not in readme], [])
+
+    def test_every_reason_the_batch_emits_is_a_named_one(self):
+        from vanilla_extract.batch import REASONS, run
+        d = TestEveryInputIsAccountedFor._tree(self)
+        for name, data in (("zero.pdf", b""), ("laughs.docx", _laughs_docx()),
+                           ("scan.pdf", SCAN_PDF), ("x.dat", b"\x00\x01\x02"),
+                           ("locked.pdf", make_pdf("BT (x) Tj ET").replace(
+                               b"%%EOF", b"trailer\n<< /Encrypt 9 0 R >>\n%%EOF"))):
+            with open(os.path.join(d, name), "wb") as fh:
+                fh.write(data)
+        _, exceptions = run([d])
+        seen = {e["reason"] for e in exceptions}
+        self.assertGreaterEqual(len(seen), 9)
+        self.assertEqual(seen - set(REASONS), set())
+
+    def test_the_python_and_browser_guards_agree_on_unicode_digits(self):
+        """`\\d` is Unicode in Python and ASCII in JavaScript, so `-١٢` was a
+        number to one guard and a formula to the other."""
+        from vanilla_extract.batch import csv_safe
+        self.assertTrue(csv_safe("-\u0661\u0662").startswith("'"))
+        self.assertEqual(csv_safe("-12"), "-12")
 
 
 def _chromium():
@@ -2660,6 +2744,20 @@ class TestReviewPageInABrowser(unittest.TestCase):
                  return [c, new Set([...r.getClientRects()].map(x => Math.round(x.top))).size]; })""")
         self.assertTrue(lines)
         self.assertEqual({c: n for c, n in lines}, {c: 1 for c, _n in lines})
+
+    def test_the_datasheet_export_applies_the_same_formula_guard(self):
+        """The datasheet page carries its own copy of the browser guard, and
+        nothing tested it: turning it into /^-/ left the suite green."""
+        from vanilla_extract.report import write_datasheet
+        path = os.path.join(self.dir, "sheet.html")
+        rows = [{"name": "-2+3+cmd|' /C calc'!A0", "extension": "-$251.00"},
+                {"name": "=1+1", "extension": "-4.5%"}]
+        write_datasheet(rows, path, columns=["name", "extension"])
+        page = self.ctx.new_page()
+        page.goto("file://" + path)
+        got = self._export(page)
+        self.assertEqual([(r["name"], r["extension"]) for r in got],
+                         [("'-2+3+cmd|' /C calc'!A0", "-$251.00"), ("'=1+1", "-4.5%")])
 
     def test_the_page_works_when_storage_throws(self):
         """Private windows and locked-down browsers refuse localStorage."""
