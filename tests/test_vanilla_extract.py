@@ -2128,6 +2128,21 @@ class TestEveryInputIsAccountedFor(unittest.TestCase):
         excluded = sum(e["files_not_read"] for e in exceptions if "files_not_read" in e)
         self.assertEqual(len(results) + len(per_file) + excluded, inputs)
 
+    def test_a_symlink_row_quotes_the_link_not_this_machines_path(self):
+        """The detail carried os.path.realpath -- an absolute path of the
+        machine that ran the batch -- into a report the client receives."""
+        if not hasattr(os, "symlink") or os.name != "posix":
+            self.skipTest("needs POSIX symlinks")
+        from vanilla_extract.batch import run
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        os.makedirs(os.path.join(d, "realdir"))
+        os.symlink("realdir", os.path.join(d, "alias"))
+        _, exceptions = run([d])
+        row, = [e for e in exceptions if e["reason"] == "symlink_not_followed"]
+        self.assertIn("realdir", row["detail"])
+        self.assertNotIn(d, row["detail"])
+
     def test_the_gui_prescan_still_counts_exactly_the_work(self):
         from vanilla_extract import batch
         from vanilla_extract.gui.session import Index

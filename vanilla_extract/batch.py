@@ -306,9 +306,12 @@ def _walk(paths, recurse_archives=True):
                 for d in sorted(dirs):
                     full = os.path.join(root, d)
                     if os.path.islink(full):
+                        # The link's own text, as readlink gives it -- not
+                        # realpath, which put this machine's absolute paths
+                        # into a report the client receives.
                         yield full, Skip(
                             "symlink_not_followed",
-                            f"a link to the folder {os.path.realpath(full)}; not "
+                            f"a link to the folder {os.readlink(full)!r}; not "
                             f"followed, since a link can loop back up the tree -- "
                             f"name the target on the command line to read it")
                         continue
