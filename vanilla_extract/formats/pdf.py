@@ -26,6 +26,7 @@ import re
 import zlib
 
 from . import pdfcmap
+from .. import limits
 from ..limits import StreamTooLarge, bounded_inflate
 
 
@@ -90,7 +91,7 @@ def _iter_streams(data):
         end = data.find(b"endstream", m.end())
         if end == -1:
             return
-        yield header, data[m.end():end]
+        yield header, m.end(), end          # offsets: the caller sizes before it copies
         pos = end + len(b"endstream")
 
 
@@ -350,6 +351,16 @@ def extract_pdf(fh):
         raise EncryptedPDF(
             "encrypted PDF (standard security handler); text is not readable "
             "without decryption, which this library does not implement")
+    # The Flate cap, applied to a stream stored uncompressed. Without it a
+    # 250 MB PDF riding in a 5 MB zip was indexed and tokenized byte by byte:
+    # 38 s and 537 MB for one document. Checked by offsets, before anything is
+    # copied or indexed, so a refusal costs one pass of find().
+    for header, start, end in _iter_streams(data):
+        if b"/Filter" not in header and end - start > limits.MAX_PDF_STREAM_BYTES:
+            raise StreamTooLarge(
+                f"an uncompressed content stream of {(end - start) // (1024 * 1024)} MB "
+                f"is past the {limits.MAX_PDF_STREAM_BYTES // (1024 * 1024)} MB "
+                f"per-stream limit")
     try:
         cmaps = pdfcmap.font_cmaps(data)
     except Exception:                      # noqa: BLE001
@@ -359,8 +370,8 @@ def extract_pdf(fh):
     saw_text_ops = False
     tally = [0, 0]            # [characters kept, characters dropped as glyph IDs]
     streams = 0
-    for header, raw in _iter_streams(data):
-        body = _decompress(header, raw)
+    for header, start, end in _iter_streams(data):
+        body = _decompress(header, data[start:end])
         if not body:
             continue
         if b"Tj" not in body and b"TJ" not in body:

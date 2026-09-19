@@ -1461,6 +1461,29 @@ class TestReviewRegressions(unittest.TestCase):
         self.assertIn("MB", exceptions[0]["detail"])
         self.assertLess(took, 1.0)
 
+    def test_an_unfiltered_pdf_stream_has_the_same_cap(self):
+        """Only Flate streams were capped. A 250 MB PDF whose content stream
+        was stored uncompressed rode in a 5 MB zip and took 38 s and 537 MB."""
+        import time
+        from unittest import mock
+        from vanilla_extract import limits
+        from vanilla_extract.batch import run
+        cap = 1024 * 1024
+        body = b"BT (Hello raw) Tj ET\n" + b" " * (cap * 3)
+        doc = (b"%PDF-1.4\n1 0 obj\n<< /Length " + str(len(body)).encode()
+               + b" >>\nstream\n" + body + b"\nendstream\nendobj\n%%EOF\n")
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        with open(os.path.join(d, "raw.pdf"), "wb") as fh:
+            fh.write(doc)
+        with mock.patch.object(limits, "MAX_PDF_STREAM_BYTES", cap):
+            start = time.thread_time()
+            results, exceptions = run([d])
+            took = time.thread_time() - start
+        self.assertEqual(results, [])
+        self.assertEqual([e["reason"] for e in exceptions], ["limit_exceeded"])
+        self.assertLess(took, 1.0)
+
     def test_odd_length_hex_does_not_disable_every_font(self):
         """#6 -- one malformed CMap entry made a whole readable PDF 'undecodable'."""
         from vanilla_extract.formats import pdfcmap
