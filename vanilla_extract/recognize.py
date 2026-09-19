@@ -70,7 +70,7 @@ DETECTORS = [
 _LABEL_STOPWORDS = {
     "page", "continued", "note", "notes", "comments", "description",
     "terms and conditions", "thank you", "sincerely", "regards",
-    # HTTP methods: an API reference sets "GET" above "/api/scope" on a line
+    # HTTP methods: an API reference sets "GET" above "/api/items" on a line
     # of its own, which is the label-on-its-own-line shape. A form field is
     # never called "GET".
     "get", "post", "put", "patch", "delete",
