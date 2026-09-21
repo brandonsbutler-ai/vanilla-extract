@@ -28,7 +28,26 @@ have missed it.
 
 Absolute paths that identify one machine; credentials and key material;
 the tool's own output files, which embed the source of whatever was
-surveyed; and a list of private names kept in the hook itself.
+surveyed; and a list of private names.
+
+That last list is stored as SHA-256 digests, not as words. This file is
+published, so a rule table that spelled the names out was an inventory of
+exactly what it was meant to hide -- which is what it was until
+2026-09-20, in two public repositories. Scanning hashes each identifier
+token it finds and looks the digest up. It is not secrecy: a short known
+word can be confirmed by hashing it. It removes the browsable list, which
+is the part that did the damage.
+
+A hashed rule prints the file and line and withholds the text, so the
+name does not end up in a terminal, a CI log, or the override log.
+
+To add a name:
+
+    python3 .githooks/pre-push --hash NAME            # a whole name
+    python3 .githooks/pre-push --hash --prefix NAME_  # a tag prefix
+
+and paste the digest into the matching table. Do not write the name in a
+comment next to it.
 
 ## Exemptions
 
@@ -51,10 +70,12 @@ rewrite and before cutting a tag:
 
 `git push --no-verify` skips it. Each clone must set `core.hooksPath`
 itself -- committing the hook makes the file survive a clone, not run.
-The hook and the allowlist are not scanned for content, so read them
-rather than trusting them. It is blind to anything binary, compressed or
-encoded, and to a leak that is prose rather than a pattern -- a customer
-name or an internal hostname in a sentence is still a reviewer's job.
+The allowlist is not scanned for content, because its job is to quote the
+strings it exempts, so read it rather than trusting it; the hook itself
+IS scanned, and refuses to push itself if a private string is ever pasted
+back into it. It is blind to anything binary, compressed or encoded, and
+to a leak that is prose rather than a pattern -- a customer name or an
+internal hostname in a sentence is still a reviewer's job.
 
 And it does not un-publish anything. A force-push leaves the old objects
 served by SHA until the host is asked to collect them.

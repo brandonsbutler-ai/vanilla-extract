@@ -6,16 +6,43 @@ Python 3 stdlib only. No third-party anything, to match the repo it guards.
 
 WHY IT SCANS HISTORY AND NOT THE WORKING TREE
 ---------------------------------------------
-2026-09-17 a history rewrite scrubbed /media/republicon/... from this repo and
-MISSED `W:\\LinuxSideClaudeProjects\\CP\\resume\\cobblerpy` in
-packaging/CodeCobbler.bat. That string is still reachable from 39 commits and
-from tags v0.1.0 and v0.1.1. The working tree has been clean since 2026-09-19.
+2026-09-17 a history rewrite scrubbed one developer's absolute project path out
+of this repo and missed a second spelling of the same path in a Windows batch
+file. That spelling stayed reachable from 39 commits and from tags v0.1.0 and
+v0.1.1 while the working tree read clean from 2026-09-19 onward.
 
 So a gate that looks at `git diff`, at the index, or at the checkout would have
 reported ALL CLEAR every single time while the leak sat in published history.
 This gate reads the refs git hands a pre-push hook on stdin and scans the blobs
 those refs actually carry to the remote, plus the tip tree, plus commit and tag
 messages.
+
+WHY THE THINGS IT BLOCKS ARE NOT WRITTEN DOWN HERE
+--------------------------------------------------
+2026-09-20: this file is committed to two PUBLIC repositories. Until today its
+rule table listed, in plaintext, every private product name and every machine
+literal it exists to keep out -- so the guard published the exact inventory it
+was built to suppress, and `grep -i` over a public clone read it straight off.
+
+Those two rule tables are now SHA-256 digests of the lowercased names (see
+`_token_finder`). Scanning hashes each candidate identifier token out of the
+text and looks the digest up, instead of matching a pattern that spells the
+name. This is NOT secrecy: a short known word is dictionary-attackable in
+seconds, and it is meant to be, because the guard has to be able to recognise
+the name with nothing but what is in this file. What it removes is the
+BROWSABLE INVENTORY -- the part that actually did the damage. An attacker who
+already knows a name can confirm it; an attacker who does not cannot read it.
+
+Consequences, stated so nobody quietly undoes them:
+  * the guard cannot print a hashed match in plaintext, and does not try; a
+    hashed finding reports rule, file and line and withholds the text, so the
+    name does not land in a terminal, a CI log or the override log.
+  * this file is no longer exempt from content scanning. It has no private
+    string left in it, so it can be scanned like anything else -- and if
+    someone ever pastes one back in, the guard blocks its own push. That is a
+    stronger regression test than any unit test.
+  * to add a name, run `pre-push --hash NAME` and paste the digest. Do not
+    write the name into this file, not even in a comment.
 
 CONTRACT (githooks(5), verified against git's own pre-push.sample)
 ------------------------------------------------------------------
@@ -46,6 +73,143 @@ import time
 
 BLOCK = "BLOCK"
 WARN = "WARN"
+
+# `redact` modes. MASK keeps the ends of a credential so it can be recognised
+# without being readable. HIDE prints nothing of the match at all, and is what
+# every hashed rule uses: the whole point of hashing the table was to stop the
+# name being published, and printing it on the way to refusing it -- into a
+# terminal, a CI job log, a pasted bug report -- republishes it just as well.
+MASK = "mask"
+HIDE = "hide"
+
+# --------------------------------------------------------------------------
+# hashed name tables
+# --------------------------------------------------------------------------
+#
+# SHA-256 of each name, LOWERCASED, hex, sorted. Sorted on purpose: the order
+# then carries no information about which name is which, and a diff that adds
+# one does not show where it landed in somebody's mental list.
+#
+# Regenerate or extend with:  python3 .githooks/pre-push --hash NAME [NAME...]
+#
+# THREAT MODEL, honestly: these are short words. Anyone who suspects a name can
+# hash it and get a yes/no in microseconds, and a large wordlist will recover
+# the ordinary-English ones. That is unavoidable for any scheme that has to
+# recognise the name using only what is committed here -- a salt committed
+# beside the hashes is not a salt, and a salt kept outside the repo makes the
+# rule silently do nothing on a fresh clone, which is fail-open and worse than
+# the leak. Key-stretching (PBKDF2/scrypt) is also out: the guard hashes every
+# candidate token in every blob, millions per push, so any per-hash cost that
+# hurts an attacker stops the guard dead. Plain SHA-256 is the honest choice.
+# It converts DISCLOSURE ("here is the list") into a CONFIRMATION ORACLE ("is
+# it this one?"), which is the harm that was actually being done.
+
+INTERNAL_NAME_SHA256 = frozenset((
+    "067923ee8ebcb002c2ba1bbc78678d1aa93a539e64c0d401bb984c6c5425c895",
+    "153bf41308836cdec3e08eea06c586682c477b5bb3d4bb1013f4b98d8eef4dcc",
+    "265060fc084ed412c19d7b0e53178228df26f36472641ebdd31740ee713ffc4d",
+    "2744aff0a81bb77ec5b4fe87372890e552ab58a64372e65b2157966149b3e589",
+    "2ce1d14038a732cc4f5b3843ce4a30fd38976f5acdea3655d64ac0db71f38097",
+    "47979f65474f6f56f22924642e6a6fc34e94ceffcc99018130b396cb608fbe92",
+    "59c7006eb45aaafa73a4252b2e085b1e3d5ec90531f661e2a5ce9fdd22678e62",
+    "8d8cc377044b5eed24850f8d102f1df35788ef67dce6d8a7a59fea40804c0142",
+    "92ac19d03bfd6217e87de475fea71f86f48e653e748d05688beb841742b4f417",
+    "96bdfb0ee2df330b1ecd70aa7e3db2c426ad3b9b7b78a6fb9f5e7bfe86b2db68",
+    "9bb8c88fffd6803e28d6cff3bf33b932b46dad534b9acc9afab007dfde26d003",
+    "de7a93f38659f0c92fc97ca9cd954c3667f863b7e13aa7c0b4fc268749ca1c00",
+))
+
+# PREFIXES. Every entry here MUST end in `_`; the matcher only ever offers it
+# candidates that end in `_`, because that is how it finds prefix boundaries
+# without being told how long a prefix is. A prefix that did not end in `_`
+# would be stored and never matched -- silently. `--hash --prefix` refuses one.
+INTERNAL_PREFIX_SHA256 = frozenset((
+    "41a6bbf5f4f8a4b0377126f266d796e85e784d575bab1120282d2fbcd66c9baf",
+    "a9004a57c1f4e25d3d2ba24b77405930c78d5f6961d8bef859aaa348b527d9b1",
+))
+
+# The account name, the drive label and the project directory of the machine
+# the 2026-09-17 leak came from. Used to be a plaintext alternation in this
+# file, which meant the hook published the username it existed to hide.
+MACHINE_LITERAL_SHA256 = frozenset((
+    "6573cdde16eed997b5ba938aa291bef3d1ac3bcd8c27c3a2309e8eb58898e16a",
+    "aa16fdcf34dba173aa5ae2e59cda35bb5c7897dd77678d75fe76879cd6247826",
+    "cd50cfa1fad6c6df833a87b5799a410c7c82da144c059efd19a00b019687b0d4",
+))
+
+# A "run" is a maximal stretch of identifier characters. Candidate names are
+# cut out of a run at boundaries that are NOT alphanumeric, which reproduces
+# the old `(?<![A-Za-z0-9])name(?![A-Za-z0-9])` exactly: `_` bounds a name, so
+# a two-part table entry like `AAA_BBB` matches inside `xx_AAA_BBB_yy`, and a
+# letter does not, so the CSS variable `--violet:#bc8cff` and the legend line
+# `#   violet   nothing imports it` yield the token `violet` and nothing else
+# -- they never produce the longer name that would match.
+RUN_RE = re.compile(r"[A-Za-z0-9_]+")
+
+# Round numbers, deliberately loose, chosen to bound the work rather than to
+# describe the table: they say only "nothing shorter than 4 or longer than 32",
+# which is true of any plausible product name and tells an attacker nothing he
+# could not have assumed. Do not tighten these to the table's real extremes --
+# that would hand over the exact lengths for free.
+MIN_TOKEN_LEN = 4
+MAX_TOKEN_LEN = 32
+
+
+def name_digest(s: str) -> str:
+    """The one definition of how a name is hashed. Lowercased, UTF-8, hex."""
+    return hashlib.sha256(s.lower().encode("utf-8")).hexdigest()
+
+
+def _segments(run, prefix_mode):
+    """Yield (start, end) slices of `run` that sit on non-alphanumeric edges.
+
+    starts: the run's start, and every position just after a `_`.
+    ends:   for a whole name, the run's end and every position of a `_`.
+            for a prefix, every position just after a `_` -- a prefix has no
+            trailing boundary (in the old regex `PREFIX_` matched inside
+            `PREFIX_ANYTHING`), and every prefix in the table ends in `_`, so
+            the underscores are the only ends worth trying.
+    """
+    cuts = [i for i, ch in enumerate(run) if ch == "_"]
+    starts = [0]
+    starts.extend(i + 1 for i in cuts)
+    if prefix_mode:
+        ends = [i + 1 for i in cuts]
+    else:
+        ends = cuts + [len(run)]
+    for s in starts:
+        for e in ends:                       # ends is ascending
+            d = e - s
+            if d < MIN_TOKEN_LEN:
+                continue
+            if d > MAX_TOKEN_LEN:
+                break
+            yield s, e
+
+
+def _token_finder(digests, prefix_mode=False):
+    """-> find(text) yielding (offset, matched_text) for hashed hits.
+
+    The fast path matters: the overwhelming majority of identifier runs have no
+    underscore, so they are one candidate and one hash. Only runs containing
+    `_` pay for the segment walk.
+    """
+    def find(text):
+        for m in RUN_RE.finditer(text):
+            run = m.group(0)
+            base = m.start()
+            if "_" not in run:
+                if prefix_mode:
+                    continue                 # a prefix in the table ends in _
+                if MIN_TOKEN_LEN <= len(run) <= MAX_TOKEN_LEN:
+                    if name_digest(run) in digests:
+                        yield base, run
+                continue
+            for s, e in _segments(run, prefix_mode):
+                cand = run[s:e]
+                if name_digest(cand) in digests:
+                    yield base + s, cand
+    return find
 
 # Names that are generic enough to be documentation rather than a real machine.
 # `/home/runner/` is GitHub Actions. `/Users/you/` is a manual. Those warn.
@@ -124,27 +288,51 @@ def _email_severity(match: re.Match) -> str | None:
 
 
 class Rule:
-    __slots__ = ("rid", "category", "severity", "regex", "why", "redact", "refine")
+    __slots__ = ("rid", "category", "severity", "regex", "finder", "why",
+                 "redact", "refine")
 
     def __init__(self, rid, category, severity, pattern, why,
-                 flags=0, redact=False, refine=None):
+                 flags=0, redact=False, refine=None, finder=None):
         self.rid = rid
         self.category = category
         self.severity = severity
-        self.regex = re.compile(pattern, flags)
+        self.regex = re.compile(pattern, flags) if pattern is not None else None
+        self.finder = finder
         self.why = why
         self.redact = redact
         self.refine = refine
+        if (self.regex is None) == (finder is None):
+            raise ValueError("rule %s needs exactly one of pattern/finder" % rid)
+
+    def find(self, text):
+        """-> (offset, matched_text, match_or_None).
+
+        A hashed rule has no match object, so it cannot have a `refine` step --
+        refine exists to look at capture groups, and there are none.
+        """
+        if self.regex is not None:
+            for m in self.regex.finditer(text):
+                yield m.start(), m.group(0), m
+        else:
+            for start, tok in self.finder(text):
+                yield start, tok, None
 
 
 CONTENT_RULES = [
     # ---------------------------------------------------------------- machine
+    # Hashed. Used to be a plaintext alternation of the account name, the drive
+    # label and the project directory -- i.e. the hook published the three
+    # strings the 2026-09-17 rewrite existed to delete. Case-insensitive as
+    # before (the digest is of the lowercased name). Slightly WIDER than the
+    # old `\b...\b`, because `_` bounds a token here and is a word character to
+    # `\b`: `foo_NAME` now matches where it used to slip through. Wider is the
+    # safe direction for this rule.
     Rule(
-        "machine.literal", "machine identity", BLOCK,
-        r"\b(?:republicon|Winblock|LinuxSideClaudeProjects)\b",
-        "a literal from this developer's machine; these are the exact strings "
+        "machine.literal", "machine identity", BLOCK, None,
+        "a literal from this developer's machine; one of the exact strings "
         "the 2026-09-17 rewrite was meant to remove",
-        flags=re.IGNORECASE,
+        redact=HIDE,
+        finder=_token_finder(MACHINE_LITERAL_SHA256),
     ),
     Rule(
         "machine.media_mount", "machine identity", BLOCK,
@@ -244,27 +432,30 @@ CONTENT_RULES = [
         refine=_secret_value_severity,
     ),
     # -------------------------------------------------------- internal names
-    # Every one of these is an invented word, so there is no English sentence
-    # they can collide with and case-insensitive costs nothing. Case matters
-    # here in practice: DESIGN_NOTES.md writes `fortefide` in lower case on the
-    # same line as `AI_Sec`, and a CamelCase-only rule caught one and not the
-    # other. NOTE `CodeCobbler` alone is this repo's PUBLIC name and is
-    # deliberately absent -- only the internal `CodeCobbler_TODO_` prefix.
+    # Hashed; the names are not written down here any more, and the reason is
+    # in the module docstring. Matching is case-insensitive because the case is
+    # not reliable in the wild -- design notes have written one of these names
+    # in lower case on the same line as another in mixed case, and a
+    # CamelCase-only rule caught one and missed the other.
+    #
+    # Whole tokens only. This repo's own PUBLIC name is deliberately NOT in the
+    # table, and a colour word that happens to be the first half of one of the
+    # names is not in it either -- `--violet:#bc8cff` and a legend comment
+    # yield the token `violet`, which is not a table entry, so they push.
     Rule(
-        "internal.name", "internal names", BLOCK,
-        r"(?<![A-Za-z0-9])(?:ForteFide|ForteFed|ForteStrike|ForteBase"
-        r"|DenseDefense|DenseSense|DenseAIArmour|VioletProject|AI_Sec"
-        r"|claimshop|platformv2|Infisical)(?![A-Za-z0-9])",
+        "internal.name", "internal names", BLOCK, None,
         "an internal product or project name that is not public",
-        flags=re.IGNORECASE,
+        redact=HIDE,
+        finder=_token_finder(INTERNAL_NAME_SHA256),
     ),
-    # These two are PREFIXES -- an alphanumeric follows them by definition
-    # (`CodeCobbler_TODO_FIXME`), so they get no trailing boundary.
+    # PREFIXES -- an alphanumeric follows them by definition
+    # (`<prefix>_SOMETHING`), so they get no trailing boundary. See
+    # INTERNAL_PREFIX_SHA256 for why every entry must end in `_`.
     Rule(
-        "internal.prefix", "internal names", BLOCK,
-        r"(?<![A-Za-z0-9])(?:CodeCobbler_TODO_|CustomerJourney_)",
+        "internal.prefix", "internal names", BLOCK, None,
         "an internal tag prefix that is not public",
-        flags=re.IGNORECASE,
+        redact=HIDE,
+        finder=_token_finder(INTERNAL_PREFIX_SHA256, prefix_mode=True),
     ),
     # ---------------------------------------------------------------- privacy
     Rule(
@@ -292,25 +483,32 @@ ZERO_OID_RE = re.compile(r"^0+$")
 MAX_SCAN_BYTES = 4 * 1024 * 1024  # scan the first 4 MiB of any blob
 NUL_PROBE_BYTES = 8192
 
-# The allowlist file is one of two paths whose CONTENT is never scanned: it has
-# to quote the very strings it exempts. Path rules still apply to it.
+# The allowlist file is the ONE path whose CONTENT is never scanned. It cannot
+# be scanned: its job is to quote the very strings it exempts, so every line in
+# it is by construction a finding. Path rules still apply to it.
 DEFAULT_ALLOW_REL = ".githooks/push-guard-allow.txt"
 
-# The other is this hook itself, at the one committed location the README
-# documents. The rule table above spells out every internal name in plaintext
-# and the module docstring quotes the 2026-09-17 leak verbatim, so a guard that
-# scanned its own source refused every push of the repo it was installed into:
-# 19 blocking findings, all of them its own rule table. That made the
-# `core.hooksPath` install -- the only one that survives a fresh clone --
-# impossible.
+# `.githooks/pre-push` -- this file -- USED TO BE exempt too, and no longer is.
 #
-# This is the SAME trust boundary as the allowlist, stated once more because it
-# is the one that matters most: two tracked paths are exempt from content
-# scanning, and a change to either must be reviewed the way a change to a
-# security control is reviewed, by reading it. Exact tracked paths only, never
-# a basename -- `.git/hooks/pre-push` is untracked and never reaches a remote,
-# so it needs no entry.
-SELF_PATHS = frozenset((DEFAULT_ALLOW_REL, ".githooks/pre-push"))
+# The exemption was real at the time: the rule table spelled out every internal
+# name in plaintext and the docstring quoted the leaked path verbatim, so a
+# guard that scanned its own source refused every push of the repo it was
+# installed into (19 blocking findings, all of them its own rule table), which
+# made the `core.hooksPath` install -- the only one that survives a fresh clone
+# -- impossible. It was also a blind spot exactly where a blind spot costs
+# most: the hook could not see its own leak, and shipped it to two public
+# repositories for three days.
+#
+# The name tables are hashed now and the docstring no longer quotes the path,
+# so there is nothing left in here to exempt. Scanning it is free, and it buys
+# a guarantee no test can: paste a private name or a machine path back into
+# this file and the guard refuses to push itself.
+#
+# Exact tracked path only, never a basename -- a file anywhere else in the tree
+# that happens to be called push-guard-allow.txt is ordinary content.
+# `.git/hooks/pre-push` is untracked and never reaches a remote, so it needs no
+# entry either.
+SELF_PATHS = frozenset((DEFAULT_ALLOW_REL,))
 
 
 # --------------------------------------------------------------------------
@@ -339,6 +537,13 @@ class Finding:
 
     def shown(self) -> str:
         t = self.text
+        if self.redact == HIDE:
+            # Nothing of the match, not even its length. The location is what
+            # the developer needs and the location is already on the line
+            # above; the text is what must not reach a log.
+            where = "%s:%d" % (self.path, self.line) if self.path else \
+                "the commit or tag message"
+            return "(withheld -- open %s and read it there)" % where
         if self.redact:
             if len(t) <= 12:
                 return "*" * len(t)
@@ -448,23 +653,37 @@ def rev_list_objects(args):
 
 
 def filter_blobs(pairs):
-    """Ask git which of these oids are blobs, in one batch-check call."""
+    """Ask git which of these oids are blobs, in one batch-check call.
+
+    -> [(oid, path, size)], keeping EVERY (oid, path) pair.
+
+    Keeping only one path per oid was a real exemption bypass. Two
+    byte-identical files share an oid, so a copy of a content-exempt file
+    under any other name inherited the exemption and was never scanned: the
+    skip is supposed to be a property of the PATH and this quietly made it a
+    property of the BYTES. Found 2026-09-20 by committing the allowlist a
+    second time under docs/ and watching it sail through.
+    """
     if not pairs:
         return []
-    seen, order = {}, []
+    uniq, seen_pair = [], set()
+    order, seen_oid = [], set()
     for oid, path in pairs:
-        if oid not in seen:
-            seen[oid] = path
+        if (oid, path) not in seen_pair:
+            seen_pair.add((oid, path))
+            uniq.append((oid, path))
+        if oid not in seen_oid:
+            seen_oid.add(oid)
             order.append(oid)
     p = subprocess.run(["git", "cat-file", "--batch-check"],
                        input=("\n".join(order) + "\n").encode(),
                        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    blobs = []
+    size_of = {}
     for line in p.stdout.decode("utf-8", "replace").splitlines():
         f = line.split()
         if len(f) >= 3 and f[1] == "blob":
-            blobs.append((f[0], seen.get(f[0], ""), int(f[2])))
-    return blobs
+            size_of[f[0]] = int(f[2])
+    return [(oid, path, size_of[oid]) for oid, path in uniq if oid in size_of]
 
 
 def cat_blobs(oids):
@@ -516,14 +735,14 @@ def commit_messages(rev_args):
 
 def scan_text(text, path, where, out, seen):
     for rule in CONTENT_RULES:
-        for m in rule.regex.finditer(text):
+        for start, matched, m in rule.find(text):
             sev = rule.severity
             if rule.refine is not None:
                 sev = rule.refine(m)
                 if sev is None:
                     continue
-            line = text.count("\n", 0, m.start()) + 1
-            f = Finding(rule.rid, rule.category, sev, path, line, m.group(0),
+            line = text.count("\n", 0, start) + 1
+            f = Finding(rule.rid, rule.category, sev, path, line, matched,
                         rule.why, rule.redact, where)
             k = f.key()
             if k in seen:
@@ -545,20 +764,23 @@ def scan_path(path, where, out, seen):
 
 
 def scan_blobs(blobs, where, out, seen, allow_path, stats):
-    """blobs: list of (oid, path, size). Content of allow_path is skipped."""
-    to_read = []
-    for oid, path, size in blobs:
+    """blobs: list of (oid, path, size). Content of allow_path is skipped.
+
+    A blob is READ once however many paths point at it, but it is SCANNED once
+    per path: the path is what the allowlist matches on, what the report shows,
+    and -- the reason this is not merely cosmetic -- what the content exemption
+    is keyed to. See filter_blobs.
+    """
+    paths_of = {}
+    for oid, path, _size in blobs:
         scan_path(path, where, out, seen)
         # Exact tracked path only. Matching on basename would exempt any file
         # anywhere in the tree that happened to be called push-guard-allow.txt.
         if path == allow_path or path in SELF_PATHS:
             stats["skipped_self"] += 1
             continue
-        to_read.append((oid, path, size))
-    by_oid = {}
-    for oid, path, _ in to_read:
-        by_oid.setdefault(oid, path)
-    for oid, data in cat_blobs(list(by_oid)):
+        paths_of.setdefault(oid, []).append(path)
+    for oid, data in cat_blobs(list(paths_of)):
         stats["blobs"] += 1
         if b"\x00" in data[:NUL_PROBE_BYTES]:
             stats["binary"] += 1
@@ -567,7 +789,8 @@ def scan_blobs(blobs, where, out, seen, allow_path, stats):
             stats["truncated"] += 1
             data = data[:MAX_SCAN_BYTES]
         text = data.decode("utf-8", "replace")
-        scan_text(text, by_oid[oid], where, out, seen)
+        for path in paths_of[oid]:
+            scan_text(text, path, where, out, seen)
 
 
 def plan_from_stdin(lines, remote):
@@ -576,8 +799,8 @@ def plan_from_stdin(lines, remote):
     For a ref the remote already has, only the new commits are examined --
     that is what this push adds. For a ref the remote does not have (a new
     branch, and every tag push), everything reachable that the remote does not
-    already hold is examined: that is exactly the case that carried
-    W:\\LinuxSideClaudeProjects into tags v0.1.0 and v0.1.1.
+    already hold is examined: that is exactly the case that carried the
+    2026-09-17 path leak into tags v0.1.0 and v0.1.1.
     """
     plan = []
     for raw in lines:
@@ -712,6 +935,7 @@ def log_override(root, reason, remote, findings):
 USAGE = """usage:
   pre-push <remote> <url>        # as a git hook; refs arrive on stdin
   pre-push --all-history         # audit every object reachable from all refs
+  pre-push --hash NAME [NAME...] # digest a name for one of the hashed tables
   pre-push --help
 
 options:
@@ -719,7 +943,27 @@ options:
                     or $PUSH_GUARD_ALLOW)
   --override REASON deliberate override, logged to .git/push-guard-overrides.log
                     (or set PUSH_GUARD_OVERRIDE="reason, at least 12 chars")
+  --prefix          with --hash: the names are internal.prefix entries, which
+                    must end in `_`
+
+--hash prints one sorted digest line per name, ready to paste into
+INTERNAL_NAME_SHA256 / INTERNAL_PREFIX_SHA256 / MACHINE_LITERAL_SHA256. It
+prints the digest ONLY -- never the name -- so the terminal scrollback and the
+paste itself stay clean. Do not add the name as a comment afterwards.
 """
+
+
+def hash_names(names, prefix_mode):
+    """Print digest lines for --hash. Never echoes a name back."""
+    bad = [n for n in names if prefix_mode and not n.endswith("_")]
+    if bad:
+        err("push-guard: %d prefix(es) do not end in '_'. The matcher only "
+            "offers candidates that end in '_', so such an entry would be "
+            "stored and never match -- silently. Refusing." % len(bad))
+        return 2
+    for d in sorted(name_digest(n) for n in names):
+        sys.stdout.write('    "%s",\n' % d)
+    return 0
 
 
 def main(argv):
@@ -727,6 +971,7 @@ def main(argv):
     allow_file = os.environ.get("PUSH_GUARD_ALLOW")
     override = os.environ.get("PUSH_GUARD_OVERRIDE", "")
     all_history = False
+    hash_mode = prefix_mode = False
     i = 0
     while i < len(args):
         a = args[i]
@@ -735,6 +980,10 @@ def main(argv):
             return 0
         elif a == "--all-history":
             all_history = True
+        elif a == "--hash":
+            hash_mode = True
+        elif a == "--prefix":
+            prefix_mode = True
         elif a == "--allow":
             i += 1
             allow_file = args[i]
@@ -748,6 +997,14 @@ def main(argv):
         else:
             positional.append(a)
         i += 1
+
+    # --hash is a pure function of its arguments: no repo, no git, no scan.
+    if hash_mode:
+        if not positional:
+            err("push-guard: --hash needs at least one name")
+            return 2
+        return hash_names(positional, prefix_mode)
+
     if positional:
         remote = positional[0]
 
