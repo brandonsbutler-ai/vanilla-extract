@@ -1,0 +1,67 @@
+# push-guard allowlist -- goes at .githooks/push-guard-allow.txt
+#
+# THREE tab-separated fields, ALL of which must match before a finding is
+# suppressed:
+#
+#     <rule-id>  <path-glob>  <exact matched text | /regex/ | sha256:HEX>
+#
+# All three are required on purpose. One field would let a single line switch
+# a whole category off, which is how allowlists quietly turn a gate into
+# decoration. As written, an entry exempts one known string in one known file:
+# a NEW C:\ path appearing in README.md still blocks.
+#
+# Use sha256:<hex> for anything you must exempt without writing it down --
+# the guard prints that form for you on any credential finding.
+#
+# The guard never scans this file's own contents. That is a deliberate trust
+# boundary: it has to quote the strings it exempts. Review changes to it the
+# way you would review a change to the hook itself.
+
+# --- packaging/install-launcher.sh ----------------------------------------
+# Portable shell. `$USER` is a variable, not this machine's account name, and
+# the trailing * is a glob. This is the correct way to find removable media.
+#
+# INERT as of 2026-09-20: machine.media_mount's `user` group excludes the
+# double-quote character, so `/media/"${USER:-}"/*` produces no finding at all
+# and there is nothing here to suppress. Kept deliberately -- if that character
+# class is ever widened, these two lines are what stops the widening from
+# blocking a correct installer. Verified against packaging/install-launcher.sh
+# line 124, which still contains exactly this text.
+machine.media_mount	packaging/install-launcher.sh	/media/"${USER:-}"/
+machine.media_mount	packaging/install-launcher.sh	/run/media/"${USER:-}"/
+
+# --- README.md -------------------------------------------------------------
+# Documentation examples of how to quote a Windows path. `C:\Work` is not a
+# real directory on anyone's machine; it is the manual's stand-in.
+# LIVE: all three fire on README.md lines 242 and 244 of the current tree.
+machine.win_drive_path	README.md	C:\Work\Some Project
+machine.win_drive_path	README.md	C:\Work\Project
+machine.win_drive_path	README.md	C:\Work\Project\
+
+# --- packaging/CodeCobbler.bat (history only) ------------------------------
+# The 2026-09-17 rewrite replaced the real drive path in this file with the
+# manual's stand-in `C:\path\to\cobblerpy`, then a later commit removed the
+# hard-coded REPO line entirely in favour of `%~dp0..`. The stand-in is NOT in
+# the working tree; it survives in two blobs that 39 commits still carry, so
+# --all-history and any push of a new branch or tag report it forever.
+#
+# `path\to\` is the universal documentation placeholder and names no machine.
+# History is immutable, so this entry can never go stale: it exempts two frozen
+# blobs. A NEW C:\ path appearing in CodeCobbler.bat has different text and
+# still blocks.
+machine.win_drive_path	packaging/CodeCobbler.bat	C:\path\to\cobblerpy
+
+# --- tests -----------------------------------------------------------------
+# Reserved documentation addresses, and one two-letter stand-in domain that
+# keeps a git fixture short. Neither reaches a real mailbox.
+#
+# The example.com line is REDUNDANT, not wrong: privacy.email's refine step
+# drops every reserved documentation domain before a finding exists, so there
+# is nothing for it to suppress. Kept as the written record of why that address
+# is in the test suite.
+privacy.email	tests/test_cobblerpy.py	t@example.com
+privacy.email	verify_e2e.py	t@e.com
+
+# A redacted path in a docstring: the `...` stands in for the account name
+# that was removed. Nothing identifying survives.
+machine.media_mount	tests/test_cobblerpy.py	/media/.../

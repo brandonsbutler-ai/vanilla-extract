@@ -1,0 +1,833 @@
+#!/usr/bin/env python3
+"""pre-push guard: refuse to publish machine identity, credentials, internal
+product names, or CodeCobbler's own survey output to a public remote.
+
+Python 3 stdlib only. No third-party anything, to match the repo it guards.
+
+WHY IT SCANS HISTORY AND NOT THE WORKING TREE
+---------------------------------------------
+2026-09-17 a history rewrite scrubbed /media/republicon/... from this repo and
+MISSED `W:\\LinuxSideClaudeProjects\\CP\\resume\\cobblerpy` in
+packaging/CodeCobbler.bat. That string is still reachable from 39 commits and
+from tags v0.1.0 and v0.1.1. The working tree has been clean since 2026-09-19.
+
+So a gate that looks at `git diff`, at the index, or at the checkout would have
+reported ALL CLEAR every single time while the leak sat in published history.
+This gate reads the refs git hands a pre-push hook on stdin and scans the blobs
+those refs actually carry to the remote, plus the tip tree, plus commit and tag
+messages.
+
+CONTRACT (githooks(5), verified against git's own pre-push.sample)
+------------------------------------------------------------------
+  argv[1] = remote name, argv[2] = remote URL (equal when pushing a bare URL)
+  stdin   = one line per ref:  <local ref> SP <local oid> SP <remote ref> SP <remote oid> LF
+  local ref is the literal "(delete)" and local oid is all-zeroes for a deletion
+  remote oid is all-zeroes when the remote ref does not exist yet
+  non-zero exit aborts the whole push, nothing is sent
+"""
+
+from __future__ import annotations
+
+import fnmatch
+import hashlib
+import os
+import re
+import subprocess
+import sys
+import time
+
+# --------------------------------------------------------------------------
+# rule table
+# --------------------------------------------------------------------------
+#
+# Every pattern below is written to be narrow on purpose. A gate that cries
+# wolf gets `--no-verify`'d into irrelevance, and then it protects nothing.
+# Where a pattern cannot be made narrow enough to justify blocking, it warns.
+
+BLOCK = "BLOCK"
+WARN = "WARN"
+
+# Names that are generic enough to be documentation rather than a real machine.
+# `/home/runner/` is GitHub Actions. `/Users/you/` is a manual. Those warn.
+# Anything else is somebody's actual account name and blocks.
+GENERIC_USERS = {
+    "user", "users", "username", "youruser", "yourname", "you", "me", "name",
+    "someone", "somebody", "example", "ubuntu", "debian", "root", "runner",
+    "vagrant", "docker", "node", "ci", "build", "builder", "test", "tester",
+    "linuxbrew", "admin", "developer", "dev", "foo", "bar", "USER",
+}
+
+# Values that are obviously a stand-in rather than a secret.
+PLACEHOLDER_RE = re.compile(
+    r"^(?:"
+    r"|x{3,}|\*{3,}|\.{3,}|-{3,}|_{3,}"
+    r"|<[^>]*>|\{\{?[^}]*\}?\}|\$\{?[A-Za-z_][A-Za-z0-9_]*\}?|%[sdr]|%\([^)]*\)s"
+    r"|None|null|nil|true|false|TODO|FIXME|CHANGEME|changeme|REDACTED|redacted"
+    r"|your[-_ ]?[a-z_]*|my[-_ ]?[a-z_]*|some[-_ ]?[a-z_]*"
+    r"|password|passwd|secret|api[-_]?key|token|hunter|letmein|s3cret"
+    r"|placeholder|dummy|fake|sample|example[a-z0-9_-]*|test[a-z0-9_-]*"
+    r"|os\.environ.*|getenv.*|process\.env.*"
+    r")$",
+    re.IGNORECASE,
+)
+
+RESERVED_EMAIL_DOMAINS = (
+    "example.com", "example.org", "example.net", "example.edu",
+    "invalid", "localhost", "test", "local",
+)
+
+
+def _user_severity(match: re.Match) -> str:
+    """Block a real account name; warn on a documentation placeholder."""
+    who = (match.group("user") or "").strip("\"'")
+    # A shell expansion is a variable, not a person: install-launcher.sh does
+    # `for c in /media/"${USER:-}"/*` and that is correct, portable code.
+    if "$" in who or "%" in who or "*" in who or "~" in who:
+        return WARN
+    # `/media/.../CP/resume` in a docstring is a redaction, not an account.
+    if set(who) <= {".", "_", "-"} or "..." in who:
+        return WARN
+    if who in GENERIC_USERS or who.lower() in GENERIC_USERS:
+        return WARN
+    return BLOCK
+
+
+def _secret_value_severity(match: re.Match) -> str | None:
+    """Decide whether `password = "..."` is a secret, a stand-in, or noise."""
+    val = match.group("val")
+    if len(val) < 6:
+        return None
+    if PLACEHOLDER_RE.match(val):
+        return None
+    if val.startswith(("$", "{", "<", "%")) or val.endswith("}"):
+        return None
+    has_alpha = any(c.isalpha() for c in val)
+    has_digit = any(c.isdigit() for c in val)
+    has_other = any(not c.isalnum() for c in val)
+    # Real secrets are mixed-class. A lone English word assigned to `password`
+    # is far more often a fixture or a prompt string than a live credential,
+    # so it warns instead of blocking.
+    if has_alpha and (has_digit or has_other):
+        return BLOCK
+    return WARN
+
+
+def _email_severity(match: re.Match) -> str | None:
+    domain = match.group("domain").lower()
+    if domain in RESERVED_EMAIL_DOMAINS or domain.endswith(
+        tuple("." + d for d in RESERVED_EMAIL_DOMAINS)
+    ):
+        return None
+    if match.group(0).lower().startswith(("noreply@", "no-reply@")):
+        return None
+    return WARN
+
+
+class Rule:
+    __slots__ = ("rid", "category", "severity", "regex", "why", "redact", "refine")
+
+    def __init__(self, rid, category, severity, pattern, why,
+                 flags=0, redact=False, refine=None):
+        self.rid = rid
+        self.category = category
+        self.severity = severity
+        self.regex = re.compile(pattern, flags)
+        self.why = why
+        self.redact = redact
+        self.refine = refine
+
+
+CONTENT_RULES = [
+    # ---------------------------------------------------------------- machine
+    Rule(
+        "machine.literal", "machine identity", BLOCK,
+        r"\b(?:republicon|Winblock|LinuxSideClaudeProjects)\b",
+        "a literal from this developer's machine; these are the exact strings "
+        "the 2026-09-17 rewrite was meant to remove",
+        flags=re.IGNORECASE,
+    ),
+    Rule(
+        "machine.media_mount", "machine identity", BLOCK,
+        r"(?<![A-Za-z0-9_])/(?:run/)?media/(?P<user>[^/\s\"'<>|:;,)]+)/",
+        "a removable-media mount path carries the account name that owns it",
+        refine=_user_severity,
+    ),
+    Rule(
+        "machine.home_dir", "machine identity", BLOCK,
+        r"(?<![A-Za-z0-9_])/home/(?P<user>[^/\s\"'<>|:;,)]+)/",
+        "a Linux home directory names the account it belongs to",
+        refine=_user_severity,
+    ),
+    Rule(
+        "machine.macos_home", "machine identity", BLOCK,
+        r"(?<![A-Za-z0-9_])/Users/(?P<user>[^/\s\"'<>|:;,)]+)/",
+        "a macOS home directory names the account it belongs to",
+        refine=_user_severity,
+    ),
+    Rule(
+        "machine.win_users", "machine identity", BLOCK,
+        r"(?<![A-Za-z0-9_\\])[A-Za-z]:\\Users\\(?P<user>[A-Za-z0-9_. -]+)",
+        "a Windows profile path names the account it belongs to",
+        refine=_user_severity,
+    ),
+    # A drive-letter path needs TWO separators before it counts. One is not
+    # enough: `print("Smoke-test it:\n    ...")` in packaging/build_standalone.py
+    # and `"class FakeClient:\n"` all over tests/ are `<letter>:\<char>` and a
+    # one-separator pattern flags every Python escape in the repo. The
+    # lookbehind additionally refuses a letter that follows a word character,
+    # which is what `it:\` and `Client:\` are. Segments are restricted to
+    # path characters so a regex like `type:\s*ignore(?:\[...\])` cannot match.
+    Rule(
+        "machine.win_drive_path", "machine identity", BLOCK,
+        r"(?<![A-Za-z0-9_\\])[A-Za-z]:\\(?:[A-Za-z0-9_.~ -]+\\)+"
+        r"[A-Za-z0-9_.~ -]*",
+        "an absolute drive-letter path is a path on one specific machine",
+    ),
+    # ------------------------------------------------------------ credentials
+    Rule(
+        "cred.github_pat", "credentials", BLOCK,
+        r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36}\b",
+        "GitHub personal access token (fixed prefix + 36 chars: no false "
+        "positives are possible)",
+        redact=True,
+    ),
+    Rule(
+        "cred.github_pat_fine", "credentials", BLOCK,
+        r"\bgithub_pat_[A-Za-z0-9_]{50,}\b",
+        "GitHub fine-grained personal access token",
+        redact=True,
+    ),
+    Rule(
+        "cred.aws_key_id", "credentials", BLOCK,
+        r"(?<![A-Z0-9])(?:AKIA|ASIA|ABIA|ACCA|AGPA|AIDA|AIPA|ANPA|ANVA|AROA)"
+        r"[0-9A-Z]{16}(?![A-Z0-9])",
+        "AWS access key id (AWS-assigned prefix + exactly 16 uppercase chars)",
+        redact=True,
+    ),
+    # A bare 40-char base64 string is NOT an AWS secret key signal -- half the
+    # git hashes and base64 blobs on earth match it. It only counts when the
+    # key name is sitting right next to it.
+    Rule(
+        "cred.aws_secret", "credentials", BLOCK,
+        r"aws_secret_access_key\s*[=:]\s*[\"']?(?P<val>[A-Za-z0-9/+=]{40})",
+        "AWS secret access key, named as such",
+        flags=re.IGNORECASE,
+        redact=True,
+    ),
+    Rule(
+        "cred.private_key", "credentials", BLOCK,
+        r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----",
+        "PEM private key header; the body follows it",
+        redact=True,
+    ),
+    Rule(
+        "cred.jwt", "credentials", BLOCK,
+        r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b",
+        "JSON Web Token (a base64url-encoded '{\"' header and three segments)",
+        redact=True,
+    ),
+    Rule(
+        "cred.bearer", "credentials", BLOCK,
+        r"[Bb]earer\s+(?P<val>[A-Za-z0-9._~+/=-]{20,})",
+        "a bearer token written out in full",
+        redact=True,
+        refine=lambda m: None if PLACEHOLDER_RE.match(m.group("val")) else BLOCK,
+    ),
+    Rule(
+        "cred.assignment", "credentials", BLOCK,
+        r"(?<![A-Za-z0-9_])(?:password|passwd|pwd|api[-_]?key|apikey|secret[-_]?key"
+        r"|client[-_]?secret|access[-_]?token|auth[-_]?token|private[-_]?token)"
+        r"\s*[=:]\s*[\"'](?P<val>[^\"'\n]{1,200})[\"']",
+        "a credential assigned to a literal string",
+        flags=re.IGNORECASE,
+        redact=True,
+        refine=_secret_value_severity,
+    ),
+    # -------------------------------------------------------- internal names
+    # Every one of these is an invented word, so there is no English sentence
+    # they can collide with and case-insensitive costs nothing. Case matters
+    # here in practice: DESIGN_NOTES.md writes `fortefide` in lower case on the
+    # same line as `AI_Sec`, and a CamelCase-only rule caught one and not the
+    # other. NOTE `CodeCobbler` alone is this repo's PUBLIC name and is
+    # deliberately absent -- only the internal `CodeCobbler_TODO_` prefix.
+    Rule(
+        "internal.name", "internal names", BLOCK,
+        r"(?<![A-Za-z0-9])(?:ForteFide|ForteFed|ForteStrike|ForteBase"
+        r"|DenseDefense|DenseSense|DenseAIArmour|VioletProject|AI_Sec"
+        r"|claimshop|platformv2|Infisical)(?![A-Za-z0-9])",
+        "an internal product or project name that is not public",
+        flags=re.IGNORECASE,
+    ),
+    # These two are PREFIXES -- an alphanumeric follows them by definition
+    # (`CodeCobbler_TODO_FIXME`), so they get no trailing boundary.
+    Rule(
+        "internal.prefix", "internal names", BLOCK,
+        r"(?<![A-Za-z0-9])(?:CodeCobbler_TODO_|CustomerJourney_)",
+        "an internal tag prefix that is not public",
+        flags=re.IGNORECASE,
+    ),
+    # ---------------------------------------------------------------- privacy
+    Rule(
+        "privacy.email", "personal data", WARN,
+        r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@(?P<domain>[A-Za-z0-9-]"
+        r"(?:[A-Za-z0-9.-]*[A-Za-z0-9])?\.[A-Za-z]{2,24})(?![A-Za-z0-9.-])",
+        "an email address that is not a reserved documentation domain",
+        refine=_email_severity,
+    ),
+]
+
+# Path rules fire on the file's NAME, whatever is inside it. CodeCobbler's own
+# output embeds the source of whatever was surveyed -- publishing one of these
+# publishes somebody else's code, so the name alone is enough.
+PATH_RULES = [
+    ("output.map_html", "tool output", BLOCK, "*_map_*.html",
+     "a CodeCobbler map embeds the surveyed source verbatim"),
+    ("output.shelf_html", "tool output", BLOCK, "*shelf.html",
+     "the shelf lists every project surveyed on this machine, with its path"),
+    ("output.maps_json", "tool output", BLOCK, "*CodeCobbler.maps.json",
+     "the map register records absolute paths of every surveyed project"),
+]
+
+ZERO_OID_RE = re.compile(r"^0+$")
+MAX_SCAN_BYTES = 4 * 1024 * 1024  # scan the first 4 MiB of any blob
+NUL_PROBE_BYTES = 8192
+
+# The allowlist file is one of two paths whose CONTENT is never scanned: it has
+# to quote the very strings it exempts. Path rules still apply to it.
+DEFAULT_ALLOW_REL = ".githooks/push-guard-allow.txt"
+
+# The other is this hook itself, at the one committed location the README
+# documents. The rule table above spells out every internal name in plaintext
+# and the module docstring quotes the 2026-09-17 leak verbatim, so a guard that
+# scanned its own source refused every push of the repo it was installed into:
+# 19 blocking findings, all of them its own rule table. That made the
+# `core.hooksPath` install -- the only one that survives a fresh clone --
+# impossible.
+#
+# This is the SAME trust boundary as the allowlist, stated once more because it
+# is the one that matters most: two tracked paths are exempt from content
+# scanning, and a change to either must be reviewed the way a change to a
+# security control is reviewed, by reading it. Exact tracked paths only, never
+# a basename -- `.git/hooks/pre-push` is untracked and never reaches a remote,
+# so it needs no entry.
+SELF_PATHS = frozenset((DEFAULT_ALLOW_REL, ".githooks/pre-push"))
+
+
+# --------------------------------------------------------------------------
+# findings and allowlist
+# --------------------------------------------------------------------------
+
+class Finding:
+    __slots__ = ("rid", "category", "severity", "path", "line", "text", "why",
+                 "redact", "where")
+
+    def __init__(self, rid, category, severity, path, line, text, why, redact,
+                 where):
+        self.rid = rid
+        self.category = category
+        self.severity = severity
+        self.path = path
+        self.line = line
+        self.text = text
+        self.why = why
+        self.redact = redact
+        self.where = where  # human note: which commit/ref carried it
+
+    @property
+    def digest(self) -> str:
+        return hashlib.sha256(self.text.encode("utf-8", "replace")).hexdigest()
+
+    def shown(self) -> str:
+        t = self.text
+        if self.redact:
+            if len(t) <= 12:
+                return "*" * len(t)
+            return t[:6] + "*" * 8 + t[-4:]
+        t = t.replace("\n", "\\n").replace("\t", "\\t")
+        return t if len(t) <= 160 else t[:157] + "..."
+
+    def allow_line(self) -> str:
+        """The exact line that would exempt this one finding and nothing else."""
+        path = self.path or ":message"
+        spec = "sha256:" + self.digest if self.redact else self.text
+        return "%s\t%s\t%s" % (self.rid, path, spec)
+
+    def key(self):
+        return (self.rid, self.path, self.text)
+
+
+class AllowRule:
+    __slots__ = ("rid", "glob", "spec", "regex", "digest", "src")
+
+    def __init__(self, rid, glob, spec, src):
+        self.rid = rid
+        self.glob = glob
+        self.spec = spec
+        self.src = src
+        self.regex = None
+        self.digest = None
+        if spec.startswith("sha256:"):
+            self.digest = spec[7:].strip().lower()
+        elif len(spec) >= 2 and spec[0] == "/" and spec[-1] == "/":
+            self.regex = re.compile(spec[1:-1])
+
+    def matches(self, f: Finding) -> bool:
+        if self.rid != f.rid and self.rid != "*":
+            return False
+        path = f.path or ":message"
+        if not fnmatch.fnmatchcase(path, self.glob):
+            return False
+        if self.digest is not None:
+            return f.digest == self.digest
+        if self.regex is not None:
+            return bool(self.regex.search(f.text))
+        return self.spec == f.text
+
+
+def parse_allowlist(text, src):
+    """Three tab/space-separated fields: rule-id, path glob, exact match text.
+
+    All three must match for a finding to be suppressed. That is deliberate:
+    a single field would let one entry blanket-disable a whole category, which
+    is how allowlists quietly turn a gate off.
+    """
+    rules, errors = [], []
+    for n, raw in enumerate(text.splitlines(), 1):
+        line = raw.rstrip("\n")
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        parts = re.split(r"\t+| {2,}|\t", line.strip(), maxsplit=2)
+        if len(parts) < 3:
+            parts = line.strip().split(None, 2)
+        if len(parts) < 3:
+            errors.append("%s:%d: need 3 fields (rule-id, path-glob, match): %r"
+                          % (src, n, line))
+            continue
+        rid, glob, spec = parts[0].strip(), parts[1].strip(), parts[2].strip()
+        known = {r.rid for r in CONTENT_RULES} | {p[0] for p in PATH_RULES} | {"*"}
+        if rid not in known:
+            errors.append("%s:%d: unknown rule id %r" % (src, n, rid))
+            continue
+        rules.append(AllowRule(rid, glob, spec, "%s:%d" % (src, n)))
+    return rules, errors
+
+
+# --------------------------------------------------------------------------
+# git plumbing
+# --------------------------------------------------------------------------
+
+def git(*args, check=True, binary=False):
+    p = subprocess.run(("git",) + args, stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE)
+    if check and p.returncode != 0:
+        raise RuntimeError("git %s failed: %s"
+                           % (" ".join(args), p.stderr.decode("utf-8", "replace")))
+    return p.stdout if binary else p.stdout.decode("utf-8", "replace")
+
+
+def repo_root():
+    return git("rev-parse", "--show-toplevel").strip()
+
+
+def is_zero(oid):
+    return bool(ZERO_OID_RE.match(oid))
+
+
+def rev_list_objects(args):
+    """-> (list of (oid, path)) for blobs; trees/commits dropped."""
+    out = git("rev-list", "--objects", *args, check=False)
+    pairs = []
+    for line in out.splitlines():
+        if not line:
+            continue
+        oid, _, path = line.partition(" ")
+        if len(oid) < 40:
+            continue
+        pairs.append((oid, path))
+    return pairs
+
+
+def filter_blobs(pairs):
+    """Ask git which of these oids are blobs, in one batch-check call."""
+    if not pairs:
+        return []
+    seen, order = {}, []
+    for oid, path in pairs:
+        if oid not in seen:
+            seen[oid] = path
+            order.append(oid)
+    p = subprocess.run(["git", "cat-file", "--batch-check"],
+                       input=("\n".join(order) + "\n").encode(),
+                       stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    blobs = []
+    for line in p.stdout.decode("utf-8", "replace").splitlines():
+        f = line.split()
+        if len(f) >= 3 and f[1] == "blob":
+            blobs.append((f[0], seen.get(f[0], ""), int(f[2])))
+    return blobs
+
+
+def cat_blobs(oids):
+    """Stream blob contents with one `git cat-file --batch`."""
+    if not oids:
+        return
+    p = subprocess.Popen(["git", "cat-file", "--batch"],
+                         stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                         stderr=subprocess.DEVNULL)
+    try:
+        p.stdin.write(("\n".join(oids) + "\n").encode())
+        p.stdin.close()
+        out = p.stdout
+        for _ in oids:
+            header = out.readline()
+            if not header:
+                return
+            f = header.decode("utf-8", "replace").split()
+            if len(f) < 3 or f[1] != "blob":
+                continue
+            oid, size = f[0], int(f[2])
+            data = out.read(size)
+            out.read(1)  # trailing LF
+            yield oid, data
+    finally:
+        try:
+            p.stdout.close()
+        except Exception:
+            pass
+        p.wait()
+
+
+def commit_messages(rev_args):
+    """-> list of (rev, text) for commit messages in a range."""
+    out = git("log", "--format=%H%x00%B%x00%x00", *rev_args, check=False)
+    msgs = []
+    for chunk in out.split("\x00\x00"):
+        chunk = chunk.strip("\n")
+        if not chunk:
+            continue
+        rev, _, body = chunk.partition("\x00")
+        msgs.append((rev.strip(), body))
+    return msgs
+
+
+# --------------------------------------------------------------------------
+# scanning
+# --------------------------------------------------------------------------
+
+def scan_text(text, path, where, out, seen):
+    for rule in CONTENT_RULES:
+        for m in rule.regex.finditer(text):
+            sev = rule.severity
+            if rule.refine is not None:
+                sev = rule.refine(m)
+                if sev is None:
+                    continue
+            line = text.count("\n", 0, m.start()) + 1
+            f = Finding(rule.rid, rule.category, sev, path, line, m.group(0),
+                        rule.why, rule.redact, where)
+            k = f.key()
+            if k in seen:
+                continue
+            seen[k] = f
+            out.append(f)
+
+
+def scan_path(path, where, out, seen):
+    base = os.path.basename(path)
+    for rid, cat, sev, glob, why in PATH_RULES:
+        if fnmatch.fnmatchcase(base, glob) or fnmatch.fnmatchcase(path, glob):
+            f = Finding(rid, cat, sev, path, 0, path, why, False, where)
+            k = f.key()
+            if k in seen:
+                continue
+            seen[k] = f
+            out.append(f)
+
+
+def scan_blobs(blobs, where, out, seen, allow_path, stats):
+    """blobs: list of (oid, path, size). Content of allow_path is skipped."""
+    to_read = []
+    for oid, path, size in blobs:
+        scan_path(path, where, out, seen)
+        # Exact tracked path only. Matching on basename would exempt any file
+        # anywhere in the tree that happened to be called push-guard-allow.txt.
+        if path == allow_path or path in SELF_PATHS:
+            stats["skipped_self"] += 1
+            continue
+        to_read.append((oid, path, size))
+    by_oid = {}
+    for oid, path, _ in to_read:
+        by_oid.setdefault(oid, path)
+    for oid, data in cat_blobs(list(by_oid)):
+        stats["blobs"] += 1
+        if b"\x00" in data[:NUL_PROBE_BYTES]:
+            stats["binary"] += 1
+            continue
+        if len(data) > MAX_SCAN_BYTES:
+            stats["truncated"] += 1
+            data = data[:MAX_SCAN_BYTES]
+        text = data.decode("utf-8", "replace")
+        scan_text(text, by_oid[oid], where, out, seen)
+
+
+def plan_from_stdin(lines, remote):
+    """Turn pre-push stdin into (label, rev_args_for_range, tip_oid) triples.
+
+    For a ref the remote already has, only the new commits are examined --
+    that is what this push adds. For a ref the remote does not have (a new
+    branch, and every tag push), everything reachable that the remote does not
+    already hold is examined: that is exactly the case that carried
+    W:\\LinuxSideClaudeProjects into tags v0.1.0 and v0.1.1.
+    """
+    plan = []
+    for raw in lines:
+        parts = raw.split()
+        if len(parts) < 4:
+            continue
+        local_ref, local_oid, remote_ref, remote_oid = parts[:4]
+        if local_ref == "(delete)" or is_zero(local_oid):
+            continue
+        if is_zero(remote_oid):
+            args = [local_oid, "--not"]
+            have = [r for r in git("for-each-ref", "--format=%(refname)",
+                                   "refs/remotes/" + remote,
+                                   check=False).split() if r]
+            args.extend(have) if have else args.append("--remotes=%s" % remote)
+            plan.append((("%s -> %s (new ref)" % (local_ref, remote_ref)),
+                         args, local_oid))
+        else:
+            plan.append((("%s -> %s" % (local_ref, remote_ref)),
+                         ["%s..%s" % (remote_oid, local_oid)], local_oid))
+    return plan
+
+
+def run_push_scan(plan, allow_path, stats):
+    out, seen = [], {}
+    for label, rev_args, tip in plan:
+        # (a) every blob these commits introduce -- history, not the checkout
+        blobs = filter_blobs(rev_list_objects(rev_args))
+        scan_blobs(blobs, label, out, seen, allow_path, stats)
+        # (b) commit messages in the range
+        for rev, body in commit_messages(rev_args):
+            scan_text(body, None, "%s commit %s" % (label, rev[:12]), out, seen)
+        # (c) the FULL tip tree. A leak introduced in an old commit and never
+        #     touched since is in the published snapshot but in no diff.
+        tip_pairs = []
+        for line in git("ls-tree", "-r", tip, check=False).splitlines():
+            meta, _, path = line.partition("\t")
+            f = meta.split()
+            if len(f) >= 3 and f[1] == "blob":
+                tip_pairs.append((f[2], path))
+        scan_blobs(filter_blobs(tip_pairs), "%s tip tree" % label,
+                   out, seen, allow_path, stats)
+        # (d) annotated tag message, when a tag object is being pushed
+        typ = git("cat-file", "-t", tip, check=False).strip()
+        if typ == "tag":
+            scan_text(git("cat-file", "tag", tip, check=False), None,
+                      "%s tag object" % label, out, seen)
+    return out
+
+
+def run_history_scan(allow_path, stats):
+    out, seen = [], {}
+    blobs = filter_blobs(rev_list_objects(["--all"]))
+    scan_blobs(blobs, "reachable from --all", out, seen, allow_path, stats)
+    for rev, body in commit_messages(["--all"]):
+        scan_text(body, None, "commit %s" % rev[:12], out, seen)
+    for line in git("for-each-ref", "--format=%(objecttype) %(objectname) %(refname)",
+                    check=False).splitlines():
+        f = line.split()
+        if len(f) == 3 and f[0] == "tag":
+            scan_text(git("cat-file", "tag", f[1], check=False), None,
+                      "tag object %s" % f[2], out, seen)
+    return out
+
+
+# --------------------------------------------------------------------------
+# reporting
+# --------------------------------------------------------------------------
+
+def err(msg=""):
+    sys.stderr.write(msg + "\n")
+
+
+def report(findings, allowed, stats, mode):
+    blocks = [f for f in findings if f.severity == BLOCK]
+    warns = [f for f in findings if f.severity == WARN]
+
+    def dump(group, head):
+        err("")
+        err(head)
+        err("-" * len(head))
+        by_cat = {}
+        for f in group:
+            by_cat.setdefault(f.category, []).append(f)
+        for cat in sorted(by_cat):
+            err("")
+            err("  [%s]" % cat)
+            for f in sorted(by_cat[cat], key=lambda x: (x.path or "", x.line)):
+                loc = "%s:%d" % (f.path, f.line) if f.path else "(message)"
+                err("    %s" % loc)
+                err("      rule  : %s  -- %s" % (f.rid, f.why))
+                err("      found : %s" % f.shown())
+                err("      seen  : %s" % f.where)
+                err("      allow : %s" % f.allow_line())
+
+    if blocks:
+        dump(blocks, "BLOCKED (%d) -- this push was refused" % len(blocks))
+    if warns:
+        dump(warns, "WARNINGS (%d) -- pushed anyway, look at them" % len(warns))
+
+    err("")
+    err("push-guard [%s]: %d blocking, %d warning, %d suppressed by allowlist; "
+        "%d blobs read (%d binary skipped, %d truncated, %d not scanned: %s)"
+        % (mode, len(blocks), len(warns), allowed, stats["blobs"],
+           stats["binary"], stats["truncated"], stats["skipped_self"],
+           ", ".join(sorted(SELF_PATHS))))
+    return blocks, warns
+
+
+def log_override(root, reason, remote, findings):
+    path = os.path.join(root, ".git", "push-guard-overrides.log")
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write("=" * 72 + "\n")
+            fh.write("when   : %s\n" % time.strftime("%Y-%m-%dT%H:%M:%S%z"))
+            fh.write("who    : %s\n" % git("config", "user.email",
+                                           check=False).strip())
+            fh.write("remote : %s\n" % remote)
+            fh.write("reason : %s\n" % reason)
+            for f in findings:
+                fh.write("  OVERRIDDEN %s %s:%d  sha256:%s\n"
+                         % (f.rid, f.path or "(message)", f.line, f.digest))
+    except OSError as e:
+        err("push-guard: could not write the override log (%s)" % e)
+        return None
+    return path
+
+
+# --------------------------------------------------------------------------
+
+USAGE = """usage:
+  pre-push <remote> <url>        # as a git hook; refs arrive on stdin
+  pre-push --all-history         # audit every object reachable from all refs
+  pre-push --help
+
+options:
+  --allow FILE      allowlist to use (default .githooks/push-guard-allow.txt,
+                    or $PUSH_GUARD_ALLOW)
+  --override REASON deliberate override, logged to .git/push-guard-overrides.log
+                    (or set PUSH_GUARD_OVERRIDE="reason, at least 12 chars")
+"""
+
+
+def main(argv):
+    args, remote, positional = list(argv[1:]), "origin", []
+    allow_file = os.environ.get("PUSH_GUARD_ALLOW")
+    override = os.environ.get("PUSH_GUARD_OVERRIDE", "")
+    all_history = False
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a in ("-h", "--help"):
+            sys.stdout.write(USAGE)
+            return 0
+        elif a == "--all-history":
+            all_history = True
+        elif a == "--allow":
+            i += 1
+            allow_file = args[i]
+        elif a == "--override":
+            i += 1
+            override = args[i]
+        elif a.startswith("--"):
+            err("push-guard: unknown option %r" % a)
+            err(USAGE)
+            return 2
+        else:
+            positional.append(a)
+        i += 1
+    if positional:
+        remote = positional[0]
+
+    try:
+        root = repo_root()
+    except RuntimeError as e:
+        err("push-guard: not a git repository (%s)" % e)
+        return 2
+    os.chdir(root)
+
+    allow_path = allow_file or DEFAULT_ALLOW_REL
+    allow_rules, allow_errors = [], []
+    if os.path.exists(allow_path):
+        with open(allow_path, encoding="utf-8") as fh:
+            allow_rules, allow_errors = parse_allowlist(fh.read(), allow_path)
+    for e in allow_errors:
+        err("push-guard: bad allowlist entry: %s" % e)
+    if allow_errors:
+        err("push-guard: refusing to run with an allowlist it cannot parse.")
+        return 2
+
+    stats = {"blobs": 0, "binary": 0, "truncated": 0, "skipped_self": 0}
+
+    if all_history:
+        findings = run_history_scan(allow_path, stats)
+        mode = "all-history"
+    else:
+        lines = [ln for ln in sys.stdin.read().splitlines() if ln.strip()]
+        if not lines:
+            err("push-guard: nothing on stdin, nothing to check.")
+            return 0
+        plan = plan_from_stdin(lines, remote)
+        if not plan:
+            err("push-guard: only deletions in this push, nothing to check.")
+            return 0
+        findings = run_push_scan(plan, allow_path, stats)
+        mode = "push to %s" % remote
+
+    kept, allowed = [], 0
+    for f in findings:
+        if any(r.matches(f) for r in allow_rules):
+            allowed += 1
+            continue
+        kept.append(f)
+
+    blocks, _ = report(kept, allowed, stats, mode)
+
+    if not blocks:
+        return 0
+
+    if override:
+        if len(override.strip()) < 12:
+            err("")
+            err("push-guard: an override needs a real reason (12+ characters).")
+            err("            e.g. PUSH_GUARD_OVERRIDE='fixture for issue 41'")
+            return 1
+        logged = log_override(root, override.strip(), remote, blocks)
+        err("")
+        err("push-guard: OVERRIDDEN -- %d blocking finding(s) pushed anyway."
+            % len(blocks))
+        err("            reason: %s" % override.strip())
+        if logged:
+            err("            logged: %s" % logged)
+        return 0
+
+    err("")
+    err("To publish these anyway, state a reason -- it is written to")
+    err(".git/push-guard-overrides.log with the sha256 of every finding:")
+    err("")
+    err("    PUSH_GUARD_OVERRIDE='why this is safe' git push ...")
+    err("")
+    err("If a finding is legitimate and permanent, add its `allow:` line to")
+    err("%s instead." % allow_path)
+    return 1
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv))
+    except BrokenPipeError:
+        sys.exit(0)
+    except KeyboardInterrupt:
+        sys.exit(130)
