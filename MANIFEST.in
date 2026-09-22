@@ -1,0 +1,17 @@
+# What a source distribution carries beyond the package itself.
+#
+# Whoever downloads the sdist can then re-run the claims rather than believe them:
+# the tests, the claim checker they drive, the validation record it checks against,
+# and the packaging scripts.
+include verify_e2e.py
+include VALIDATION.md
+include DESIGN.md
+include benchmark.py
+include vanilla_extract_Validation_Report.pdf
+recursive-include tests *.py
+recursive-include packaging *.py *.sh *.iss
+
+# Never ship build litter, whatever else changes.
+global-exclude __pycache__/*
+global-exclude *.pyc
+global-exclude *.bak
