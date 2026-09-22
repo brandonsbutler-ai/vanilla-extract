@@ -2,9 +2,11 @@
 
 **Pull plain text out of documents using nothing but the Python standard library.**
 
-No `pip install`. No wheels, no native extensions, no C toolchain. Drop the package in and it
-runs — which is the entire point: in a locked-down environment, adding a dependency needs an
-approval that takes longer than the job.
+No dependencies to approve: no native extensions, no C toolchain, nothing to compile and nothing
+for pip to resolve. Installing it brings the package and nothing else -- and where pip cannot
+reach, on an air-gapped machine or a locked-down desktop, you drop the package in and run it
+where it sits. That is the entire point: in a locked-down environment, adding a
+dependency needs an approval that takes longer than the job.
 
 The examples use the `vanilla` command that an install provides. In a drop-in copy with nothing
 installed, the same thing is `python3 -m vanilla_extract`, run from the folder that holds the
@@ -44,6 +46,14 @@ and refused by Python's own `csv` reader at its default settings. A longer value
 ends with `[... truncated: N characters in full]`, and a `text_truncated` column (True/False) follows
 `text` so no cut is silent. The `characters` column always counts the full text; the full text
 itself is in the document, and with `--workspace` in `extracted/`. `--no-text` leaves the column out.
+
+**`--batch` on its own prints a summary**, not the documents: how many were read, how many could
+not be, the character totals, and the first 20 rows of the table without the text column. Its size
+does not grow with the corpus. `--csv PATH` is how you get the data, `--json` is how you ask for
+machine output (one object per document, full text included), and `--exceptions PATH` writes the
+unreadable-files table. Before 2026-09-22 a bare `--batch` printed one JSON object per document
+with the full text in it -- on the 400-document case this page is written around, megabytes into
+a terminal, and the opposite of what `--help` promised.
 
 **Or let it find the fields itself**, which is the point when the client has 400 documents and no
 idea what regex to write:
@@ -224,6 +234,27 @@ percent on illustrated multi-column layouts, use poppler. If you need no depende
 
 Reproduce with `python3 benchmark.py /path/to/pdfs`.
 
+### What a benchmark cannot tell you (2026-09-22)
+
+A corpus only measures the producers that are in it. Neither corpus above contains a document
+made by TeX, and on 2026-09-22 a reader outside this project pointed the tool at one: a stock
+`pdfTeX-1.40.25` file. It came back as 31,988 characters with **zero spaces** — no error, exit
+0 — scoring 0.179 token recall against `pdftotext -layout`. TeX draws no space glyph; a word
+break is a number in the `TJ` array, and this reader was throwing those numbers away. Every word
+in the document was there and every one of them was welded to the next.
+
+That is exactly the failure this tool claims to prevent, and the benchmark had nothing to say
+about it, because a producer scan of the whole comparison corpus found not one TeX file in it.
+Reading word breaks out of the positioning (above) took the same file to **0.999**, and a
+Ghostscript document on the same machine from 0.841 to 0.859. Re-scored against `pdftotext` over
+a separate corpus of 402 real PDFs before and after the change — mean recall 0.984, median 1.000
+— **not one file's output changed by a single character**, because on those producers a wide gap
+always sits beside a space that is already there.
+
+The lesson is cheaper to write down than to learn: a benchmark's mean is a statement about its
+corpus, not about the tool. Before trusting the numbers above, check that your documents were
+made by something this corpus contains.
+
 ## It fails loudly
 
 The worst behavior a text extractor can have is returning something that *looks* like a result.
@@ -279,7 +310,7 @@ A PDF is a graph of objects; visible text lives in content streams, usually Flat
 written as PostScript-ish operators. Three steps: find the streams, decompress them, and pull
 the arguments of the text-showing operators (`Tj`, `TJ`, `'`, `"`).
 
-Two pieces are where a naive implementation goes wrong:
+Three pieces are where a naive implementation goes wrong:
 
 **The string reader is a tokenizer, not a regex.** A PDF literal string can contain balanced
 parentheses and backslash escapes — `(a (b) c)` is one string, and `(a\)b)` is one string
@@ -293,14 +324,57 @@ PDF's indirect objects — including the ones packed inside compressed object st
 which is where PDF 1.5+ puts them — and resolving `12 0 R` references. Without this, every
 LibreOffice PDF returns control characters instead of words.
 
+**Word breaks are read from positioning, not assumed to be space characters.** A `TJ` array
+positions each glyph run relative to the last one, in thousandths of an em: `[(Shared)-250(MIME)]`
+draws "Shared", moves right a quarter of an em, then draws "MIME". TeX engines — pdfTeX, XeTeX,
+LuaTeX — use that and emit **no space glyph at all**, so a reader that only concatenates the
+strings returns `SharedMIME`. A displacement of 200 thousandths or more is read as a word break;
+anything smaller is a kern inside a word and the runs are joined. The threshold is measured, not
+guessed: in the file that found this (a pdfTeX 1.40.25 document) the negative adjustments are
+bimodal — 4,780 word breaks at −230 and wider, five kerns at −10 and −20, nothing in between.
+
 ## Install it
 
-vanilla-extract is not published on PyPI. Every route below starts from a clone of
-<https://github.com/brandonsbutler-ai/vanilla-extract> or pip's git URL form.
+The name on PyPI is `vanilla-extract`, and 0.2.0 is the release going there. Whichever route
+below you take, you get that same 0.2.0 and nothing else arrives with it: the package declares no
+runtime dependencies, so there is nothing for pip to resolve.
 
-**Nothing installed at all** -- the air-gapped route. Fetch the code where there is a network,
-carry the folder across, and run the package where it sits. Python 3.9 or later is the only
-requirement; there is nothing to resolve because there is nothing to resolve:
+**From PyPI**, the ordinary case:
+
+```bash
+pip install vanilla-extract
+pip install "vanilla-extract[gui]"     # and the desktop window
+```
+
+**With pipx**, when you want the `vanilla` command on PATH without it sharing an environment with
+anything else you have installed:
+
+```bash
+pipx install vanilla-extract
+pipx install "vanilla-extract[gui]"
+```
+
+Both of those need 0.2.0 to be on the index. Until it is, and on any machine that cannot reach an
+index at all, the routes below install the same 0.2.0 from source.
+
+**From a clone, or straight from the repository** -- also the route for the exact commit you have
+read, and for a change of your own:
+
+```bash
+pip install .                    # from inside a clone
+pip install "vanilla-extract @ git+https://github.com/brandonsbutler-ai/vanilla-extract"
+pipx install "vanilla-extract @ git+https://github.com/brandonsbutler-ai/vanilla-extract"
+```
+
+The package has no runtime dependencies, but pip still has to *build* it, with setuptools 61 or
+later, and by default it downloads setuptools to do so. On a machine with no network that
+download fails. Either use the route below, or install into an environment that already has
+setuptools and tell pip not to fetch it: `pip install --no-build-isolation .`
+
+**Nothing installed at all** -- the air-gapped route, and the reason the dependency list is empty
+in the first place. Fetch the code where there is a network, carry the folder across, and run the
+package where it sits. Python 3.11 or later is the only requirement; there is nothing to resolve
+because there is nothing to resolve:
 
 ```bash
 git clone https://github.com/brandonsbutler-ai/vanilla-extract
@@ -311,18 +385,6 @@ python3 -m vanilla_extract --batch invoices/ --csv results.csv --report review.h
 
 `python3 -m vanilla_extract` takes every option `vanilla` does. It is the form to use wherever this
 README says `vanilla` and nothing has been installed.
-
-**With pip, for a `vanilla` command on PATH:**
-
-```bash
-pip install .                    # from inside a clone
-pip install "vanilla-extract @ git+https://github.com/brandonsbutler-ai/vanilla-extract"
-```
-
-The package has no runtime dependencies, but pip still has to *build* it, with setuptools 61 or
-later, and by default it downloads setuptools to do so. On a machine with no network that
-download fails. Either use the route above, or install into an environment that already has
-setuptools and tell pip not to fetch it: `pip install --no-build-isolation .`
 
 **Linux, without pip:**
 
@@ -345,6 +407,29 @@ people who cannot install Python or pip on their work machine.
 
 PyInstaller and Inno Setup are *build-time* tools. Neither ships inside the application, and the
 runtime dependency list stays empty.
+
+### Verify what you downloaded
+
+The source distribution carries more than the package: the unit tests, the claim checker they
+drive, and VALIDATION.md, the record it is checked against. The claims this README makes can
+therefore be re-run by whoever downloaded it, on their own machine, instead of believed:
+
+```bash
+pip download --no-binary :all: --no-deps vanilla-extract==0.2.0
+tar xzf vanilla*extract-0.2.0.tar.gz
+cd vanilla*extract-0.2.0
+python3 -m unittest discover -s tests
+python3 verify_e2e.py
+```
+
+The wildcard covers both spellings of the archive name -- which of them you get depends on the
+setuptools that built it, and neither is more correct than the other.
+
+`verify_e2e.py` is the file described under [Verification](#verification). It generates a fresh
+corpus, drives the real command line as a user would, asserts each claim in the README sitting
+beside it against what came back, and exits non-zero if any of them does not hold. Both commands
+were run from an unpacked 0.2.0 archive on 2026-09-22, and both came back green -- so nothing
+either of them needs is left out of it.
 
 ## The datasheet: file state as found
 
@@ -413,6 +498,14 @@ revision 2: 4 rows, 2 cell(s) changed from the previous revision
 `--import-csv` reads UTF-8 (with or without a BOM) and, failing that, Windows-1252 -- what Excel's
 plain "CSV" save writes -- and says so when it falls back. A file that is missing or unreadable is
 an error with exit status 2, not a traceback.
+
+**Re-importing the tool's own output, unmodified, files nothing.** The revision `--workspace`
+writes is the same table `--csv` hands over -- same columns, same cells, written by the same
+code -- so an untouched round trip prints `no cell changed ...; nothing filed` and a corrected
+cell is one line in the log. Until 2026-09-22 it was not: revision 1 was written without the
+`text` and `text_truncated` columns that `--csv` adds, so a byte-for-byte re-import of the
+delivered file was recorded as two corrections per document that nobody had made. One real edit
+among eight invented ones is not an audit trail.
 
 A run keeps the manifest in memory and writes it every 500 documents and once at the end, including
 when the run is cancelled or fails; re-reading and re-writing it per document made the cost grow
@@ -543,11 +636,11 @@ Every option the command accepts. `--help` prints the same list.
 
 | Option | What it does |
 |---|---|
-| `--json` | emit one JSON object per file instead of text |
+| `--json` | emit one JSON object per file instead of text; with --batch, one per document (full text included) instead of the summary |
 | `--quiet, -q` | omit the ===== filename ===== banners |
 | `--version` | show program's version number and exit |
 | `--batch` | walk the given paths and emit a table instead of text |
-| `--csv PATH` | with --batch: write results here (default: stdout summary) |
+| `--csv PATH` | with --batch: write results here (default: a summary on stdout) |
 | `--exceptions PATH` | with --batch: write the unreadable-files table here |
 | `--field NAME=REGEX` | with --batch: pull a named value out of each document (repeatable). The first capture group wins if present. |
 | `--no-text` | with --batch: omit the full text column |
@@ -565,8 +658,8 @@ Every option the command accepts. `--help` prints the same list.
 Two layers, both runnable:
 
 ```bash
-python3 -m unittest discover -s tests -v     # 195 unit tests
-python3 verify_e2e.py                        # 188 end-to-end claim checks
+python3 -m unittest discover -s tests -v     # 208 unit tests
+python3 verify_e2e.py                        # 198 end-to-end claim checks
 ```
 
 `verify_e2e.py` exists because unit tests check units, not promises. It generates a fresh corpus
@@ -585,7 +678,7 @@ figures here are whatever it last measured, not what would read best.
 python3 -m unittest discover -s tests -v
 ```
 
-195 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
+208 tests, no pytest required. Fixtures are built in code rather than committed as binaries, so
 there is nothing opaque in the repo. The suite covers the cases that actually break extractors:
 balanced parens inside PDF strings, escaped close-parens, octal escapes, odd hex nibbles,
 RTF `\fonttbl` contents leaking into output, cp1252 fallback, and misnamed files -- plus the
@@ -595,6 +688,11 @@ than returned as a blank row, and every requested field column exists on every r
 The review page's behaviour on reload, close and export is checked in a real headless Chromium
 through Playwright, a development tool only. Where Playwright is not installed those tests report
 as skipped rather than disappearing, so the count above is the same on every machine.
+
+## Changelog
+
+[CHANGELOG.md](CHANGELOG.md) says what changed in each release, in terms of what it means for
+somebody using it.
 
 ## License
 
