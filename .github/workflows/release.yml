@@ -1,0 +1,228 @@
+# Build vanilla-extract, prove the built artifact, then publish it with no
+# long-lived credential anywhere in this repository.
+#
+# Written 2026-09-21, the first CI this repository has ever had. Every claim
+# below about the publishing action, its inputs, the OIDC permission and the
+# PyPI side was read from live documentation on that date, and the source is
+# named where the claim is used so the next person can re-check it instead of
+# trusting this comment.
+#
+# The work is split into two jobs on purpose:
+#
+#   build    reads the source, runs the three checks this repository already
+#            has, and produces the wheel and the sdist. It never holds a
+#            credential that could publish anything.
+#   publish  never checks the source out at all. It downloads the artifact
+#            build made and is the only job granted `id-token: write`.
+#
+# So a mistake in the test code cannot reach the index, and a mistake in the
+# publish step cannot reach the repository. The `environment:` on the publish
+# jobs is the second half of that: PyPI's trusted publisher is registered
+# against a named environment, so a workflow run that does not enter that
+# environment cannot mint a token PyPI will accept.
+
+name: release
+
+on:
+  push:
+    tags:
+      # Release tags only. A branch push must never be able to publish.
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      index:
+        description: Which index to publish to
+        required: true
+        # TestPyPI is the default because the destructive choice should be the
+        # one you have to make on purpose. PyPI will not accept the same
+        # filename twice, so a wrong manual run there costs a version number.
+        default: testpypi
+        type: choice
+        options:
+          - testpypi
+          - pypi
+
+# "If you specify the access for any of these permissions, all of those that
+# are not specified are set to none" -- GitHub workflow syntax reference,
+# docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax,
+# read 2026-09-21. Starting from nothing and granting per job is therefore the
+# cheapest way to keep the publish job's reach to exactly one thing.
+permissions: {}
+
+jobs:
+  build:
+    name: Build and verify the distribution
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      # Actions below are pinned to their moving MAJOR tag. actions/checkout
+      # publishes bare v1..v7 tags alongside the full v7.0.1 -- verified
+      # 2026-09-21 against
+      # api.github.com/repos/actions/checkout/git/matching-refs/tags/v.
+      # A major tag takes patch and security fixes without a pull request
+      # here, and still stops a breaking v8 arriving silently. A commit SHA
+      # would be tighter, but nothing in this repository would notice when the
+      # pin went stale, and a stale pin is the failure this project is far
+      # more likely to meet than a compromised first-party action.
+      - uses: actions/checkout@v7
+
+      # 3.13 rather than the 3.11 floor pyproject declares, because
+      # packaging/verify_dist.py wants a tarfile extraction filter and so
+      # wants 3.11.4 or newer (stated in its own docstring). The choice does
+      # not affect the artifact:
+      # this package builds a py3-none-any wheel, so the interpreter that
+      # builds it is not the interpreter that has to run it. ci.yml is where
+      # the range of interpreters is exercised.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+
+      # build and twine are BUILD tools. They are installed into the runner,
+      # never into the package: vanilla-extract's runtime dependency list is
+      # empty and must stay empty. verify_dist.py checks that from the other
+      # side by installing the built artifact into an empty environment.
+      - name: Install the build tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build twine
+
+      # A tag that disagrees with the version in pyproject.toml publishes the
+      # wrong number under the right name, and PyPI will not let you take it
+      # back.
+      - name: The tag and the declared version must agree
+        if: github.event_name == 'push'
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          declared="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')"
+          if [ "$tag" != "$declared" ]; then
+            echo "tag ${GITHUB_REF_NAME} means ${tag}; pyproject.toml says ${declared}" >&2
+            exit 1
+          fi
+          echo "tag and pyproject agree on ${declared}"
+
+      - name: Unit tests
+        run: python -m unittest discover -s tests -q
+
+      # The corpus this builds is randomised and the seed is printed, so a
+      # failure here can be reproduced exactly with VANILLA_E2E_SEED=<seed>.
+      - name: Claim checker
+        run: python verify_e2e.py
+
+      - name: Build the sdist and the wheel
+        run: python -m build
+
+      # Uploaded BEFORE the distribution checker runs, and before publishing.
+      # The point of the artifact is that a failure later leaves something to
+      # open: if verify_dist.py rejects the build, or the upload to the index
+      # fails, the exact files that were judged are still attached to the run.
+      - name: Keep the built files whatever happens next
+        uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+      # The checks a stranger depends on: that the archives install into an
+      # empty environment, pull nothing with them, put working commands on the
+      # PATH, and carry no file that should never have left a private machine.
+      # Non-zero exit here means the files are not fit to publish.
+      - name: Verify the built distribution
+        run: python packaging/verify_dist.py --dist dist/ --json verify-dist.json
+
+      - name: Keep the verification evidence
+        # always(), so the evidence file survives the run that failed, which is
+        # the run anyone actually wants to read.
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: verify-dist-evidence
+          path: verify-dist.json
+          if-no-files-found: warn
+
+  publish-testpypi:
+    name: Publish to TestPyPI
+    # Only ever reached by hand. A tag push goes to the real index.
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.index == 'testpypi'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      # This name is half of the trusted publisher registered at
+      # test.pypi.org/manage/account/publishing/. Change it here and the
+      # upload stops being authorised. See RELEASING.md.
+      name: testpypi
+      url: https://test.pypi.org/p/vanilla-extract
+    permissions:
+      # "The job or workflow run requires a `permissions` setting with
+      # `id-token: write` to allow GitHub's OIDC provider to create a JSON Web
+      # Token for every run" -- GitHub OIDC documentation, read 2026-09-21. It
+      # is granted on this job alone, not at the top of the file, so only the
+      # step that publishes can mint an identity token. The same page notes
+      # that the setting "does not give the workflow permission to modify or
+      # write to any resources".
+      id-token: write
+    steps:
+      # Major tag again: actions/download-artifact publishes bare v1..v8
+      # (verified 2026-09-21). v8 is the current major and reads artifacts
+      # written by upload-artifact v4 and later, which covers the v7 used
+      # in the build job.
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+
+      # NOT pinned to a major tag, and that is deliberate.
+      # pypa/gh-action-pypi-publish publishes no bare `v1` tag: checked
+      # 2026-09-21 against
+      # api.github.com/repos/pypa/gh-action-pypi-publish/git/matching-refs/tags/v1,
+      # which returns v1.0.0a0 through v1.14.2 and nothing called `v1`. The
+      # moving major pointer this project documents, and uses in its own README
+      # example and in PyPI's publishing guide, is the BRANCH `release/v1`.
+      # The alternatives are an exact tag (v1.14.2, released 2026-07-29), which
+      # must be bumped by hand for every fix including security fixes, or a
+      # commit SHA. `release/v1` is what the publisher itself tells projects to
+      # use, so that is what is here.
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          packages-dir: dist/
+          # Prints the sha256 of each uploaded file, so the log can be compared
+          # against the digests verify_dist.py printed for the same files.
+          print-hash: true
+          # `attestations` is left at its default of true. PEP 740 attestations
+          # are generated and uploaded by default for Trusted Publishing flows
+          # (action README, read 2026-09-21) and need no permission beyond the
+          # id-token: write already granted above.
+
+  publish-pypi:
+    name: Publish to PyPI
+    # A pushed v* tag, or a deliberate manual run that chose the real index.
+    if: github.event_name == 'push' || github.event.inputs.index == 'pypi'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      # This name is half of the trusted publisher registered at
+      # pypi.org/manage/account/publishing/. See RELEASING.md.
+      name: pypi
+      url: https://pypi.org/p/vanilla-extract
+    permissions:
+      id-token: write
+    steps:
+      # Major tag again: actions/download-artifact publishes bare v1..v8
+      # (verified 2026-09-21). v8 is the current major and reads artifacts
+      # written by upload-artifact v4 and later, which covers the v7 used
+      # in the build job.
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+
+      # See the comment on the TestPyPI job for why this is a branch pointer
+      # and not a major tag.
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+          print-hash: true

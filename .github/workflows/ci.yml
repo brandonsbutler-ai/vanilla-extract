@@ -1,0 +1,97 @@
+# The three checks this repository already has, run on every change instead of
+# only when somebody remembers. Written 2026-09-21; this is the first CI the
+# repository has had, so nothing here replaces an older arrangement.
+#
+# release.yml runs the same three commands before it publishes. That is not
+# duplication to be factored away: this file's job is to fail fast on a
+# branch, and release.yml's job is to refuse to publish. Neither may depend on
+# the other having run.
+
+name: ci
+
+on:
+  # Pushes to main and every pull request. Deliberately NOT every push on
+  # every branch: with pull_request also enabled that runs each commit on a
+  # PR branch twice, for one answer.
+  push:
+    branches:
+      - main
+  pull_request:
+
+# Superseded runs are cancelled. Nothing here publishes anything, so an
+# abandoned run has no result worth waiting for.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Read the source; touch nothing.
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      # One interpreter failing should not hide what the others would have
+      # said. That is the whole reason to have a matrix.
+      fail-fast: false
+      matrix:
+        # pyproject.toml declares requires-python = ">=3.11" and names no
+        # upper bound, so the honest range is 3.11 upwards. The floor is 3.11
+        # and the reason is measured, not chosen:
+        #
+        #   verify_e2e.py imports tomllib unguarded at lines 1158, 1357 and
+        #   1545, packaging/verify_dist.py imports it at 188, and
+        #   tests/test_vanilla_extract.py imports it unguarded inside
+        #   test_installers_agree_on_the_command_name at line 2031 (all
+        #   re-measured 2026-09-22). tomllib arrived in 3.11.
+        #
+        # The declaration used to say 3.9 while nothing below 3.11 had ever
+        # been run; the gap that opened is closed on 2026-09-22 by raising the
+        # declaration to meet this matrix, rather than by widening this list
+        # to interpreters neither the unit tests nor the claim checker can
+        # start on.
+        #
+        # 3.14 is the newest stable series: actions/python-versions carries
+        # 3.14.7 with "stable": true and every 3.15 entry still marked
+        # unstable, checked 2026-09-21.
+        python-version: ['3.11', '3.13', '3.14']
+
+    steps:
+      # Pinned to the moving major tag. The repositories publish bare v1..v7
+      # tags alongside their full versions (verified 2026-09-21 against each
+      # repository's matching-refs/tags/v listing), so a major tag collects
+      # patch and security fixes without a pull request here while still
+      # refusing a breaking new major.
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Unit tests
+        run: python -m unittest discover -s tests -q
+
+      - name: Claim checker
+        run: python verify_e2e.py
+
+      # The distribution checker builds venvs, installs the archives into them
+      # and re-runs the whole suite from the unpacked sdist, so it costs more
+      # than the two checks above put together. Running it on one interpreter
+      # is enough to catch a packaging mistake, and the artifact it checks is
+      # a py3-none-any wheel that does not vary by interpreter anyway.
+      - name: Install the build tools
+        if: matrix.python-version == '3.13'
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build twine
+
+      - name: Build the sdist and the wheel
+        if: matrix.python-version == '3.13'
+        run: python -m build
+
+      - name: Verify the built distribution
+        if: matrix.python-version == '3.13'
+        run: python packaging/verify_dist.py --dist dist/
