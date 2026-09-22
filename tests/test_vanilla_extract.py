@@ -207,6 +207,57 @@ class TestPDF(unittest.TestCase):
         broken = make_pdf("BT (x) Tj ET")[:-30]
         pdf.extract_pdf(broken)          # must not raise
 
+    # TeX-produced PDFs (pdfTeX, XeTeX, LuaTeX) draw no space glyph at all.
+    # A word break is a negative displacement inside the TJ array instead --
+    # -250 thousandths of an em is the pdfTeX interword space. Found
+    # 2026-09-22: the stock Ubuntu file
+    # /usr/share/doc/shared-mime-info/shared-mime-info-spec.pdf came back as
+    # 31,988 characters containing ZERO spaces, exit 0, token recall 0.179
+    # against `pdftotext -layout`. The benchmark corpus never caught it
+    # because a producer scan of all 400+ of its PDFs found no TeX file in it.
+    def test_tj_word_gap_becomes_a_space(self):
+        out = pdf.extract_pdf(make_pdf("BT [(Shared)-250(MIME)] TJ ET"))
+        self.assertEqual(out, "Shared MIME")
+
+    def test_tj_kern_does_not_split_a_word(self):
+        """A kern pair is tens of thousandths, not hundreds; it is NOT a gap.
+
+        Both signs matter: pdfTeX writes `(MIME-inf)20(o)` to tighten, and
+        negative kerns of the same size appear in Ghostscript output. Either
+        one splitting a word would be a new silent corruption, worse than the
+        bug being fixed.
+        """
+        self.assertEqual(pdf.extract_pdf(make_pdf("BT [(inf)20(o)] TJ ET")), "info")
+        self.assertEqual(pdf.extract_pdf(make_pdf("BT [(inf)-20(o)] TJ ET")), "info")
+
+    def test_tj_gap_accumulates_across_elements(self):
+        """Several small nudges that add up to a space are a space.
+
+        The array is [(a) -150 -150 (b)]: neither number alone clears the
+        threshold, the pair does, and the displacement on the page is what the
+        reader actually sees.
+        """
+        self.assertEqual(pdf.extract_pdf(make_pdf("BT [(a)-150 -150(b)] TJ ET")),
+                         "a b")
+
+    def test_positioning_numbers_outside_an_array_are_not_gaps(self):
+        """`10 -700 Td` moves the cursor; it must not inject a space.
+
+        Only numbers INSIDE a TJ array are displacements between glyph runs.
+        Operand numbers belong to the operator that follows them.
+        """
+        self.assertEqual(pdf.extract_pdf(make_pdf("BT 10 -700 Td (only) Tj ET")),
+                         "only")
+
+    def test_gap_never_doubles_an_existing_space(self):
+        """A producer that emits BOTH a space glyph and a wide gap.
+
+        LibreOffice does this. Inserting a second space would change the text
+        of every such document for no reason.
+        """
+        self.assertEqual(pdf.extract_pdf(make_pdf("BT [(a )-250(b)] TJ ET")),
+                         "a b")
+
 
 class TestOOXML(unittest.TestCase):
     def test_docx_paragraph_order(self):
@@ -1362,7 +1413,7 @@ class TestHostileInput(unittest.TestCase):
         called, and the extension must not route to that reader.
         """
         from vanilla_extract.dispatch import sniff, extract
-        from vanilla_extract.formats import plain, pdf, rtf as rtf_mod, ooxml
+        from vanilla_extract.formats import plain, pdf, rtf as rtf_mod
         for data, name in ((b"Invoice: T1\nTotal: $8.00\n", "report.pdf"),
                            (b"a,b\n1,2\n", "sheet.pdf"),
                            (b"plain words", "note.rtf"),
@@ -2902,6 +2953,154 @@ class TestReviewPageInABrowser(unittest.TestCase):
         except Exception:                 # noqa: BLE001
             pass
         self.assertEqual(seen, ["beforeunload"])
+
+
+class TestBatchStdoutIsASummary(unittest.TestCase):
+    """`--batch` with no `--csv` used to dump every document's FULL TEXT.
+
+    Found 2026-09-22 by an audit that read `--help` and did what it said.
+    `--help` promised "emit a table instead of text" and "--csv PATH ...
+    (default: stdout summary)"; what arrived was one JSON object per
+    document, text column included, on stdout. On the 400-document run the
+    README is written around that is megabytes into a terminal, and it is the
+    opposite of both sentences.
+    """
+
+    def _corpus(self, count=3, body="Line item detail. " * 60):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        for i in range(count):
+            with open(os.path.join(d, f"inv-{1001 + i}.txt"), "w",
+                      encoding="utf-8") as fh:
+                fh.write(f"ACME SUPPLY CO\nInvoice Number: INV-{1001 + i}\n"
+                         f"Total: $1{i}0.00\n{body}")
+        return d
+
+    def _cli(self, *argv):
+        import contextlib
+        from vanilla_extract.__main__ import main
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = main(list(argv))
+        return rc, out.getvalue(), err.getvalue()
+
+    def test_bare_batch_does_not_print_the_documents(self):
+        d = self._corpus()
+        rc, out, _err = self._cli("--batch", d)
+        self.assertEqual(rc, 0)
+        self.assertNotIn("Line item detail.", out)
+
+    def test_bare_batch_prints_a_summary_with_the_counts(self):
+        d = self._corpus()
+        rc, out, _err = self._cli("--batch", d)
+        self.assertEqual(rc, 0)
+        self.assertIn("3 documents read", out)
+        self.assertIn("inv-1001.txt", out)
+        self.assertIn("--csv", out)          # says where the data is
+
+    def test_the_summary_is_bounded_however_large_the_corpus(self):
+        """The complaint was size, so size is what the test measures.
+
+        60 documents of 1 KB each: the old output was the whole corpus back
+        again. A summary has to stay a summary, so the per-document listing is
+        capped and the rest counted.
+        """
+        d = self._corpus(60)
+        _rc, out, _err = self._cli("--batch", d)
+        self.assertLess(len(out), 4000, out[:500])
+        self.assertIn("and 40 more", out)
+
+    def test_json_is_how_you_opt_into_machine_output(self):
+        d = self._corpus(2)
+        rc, out, _err = self._cli("--batch", "--json", d)
+        self.assertEqual(rc, 0)
+        rows = [__import__("json").loads(line) for line in out.splitlines() if line]
+        self.assertEqual(len(rows), 2)
+        self.assertIn("Line item detail.", rows[0]["text"])
+
+    def test_csv_is_how_you_get_the_data(self):
+        d = self._corpus(2)
+        out_csv = os.path.join(d, "..", "out.csv")
+        out_csv = os.path.abspath(out_csv)
+        self.addCleanup(lambda: os.path.exists(out_csv) and os.remove(out_csv))
+        rc, out, err = self._cli("--batch", d, "--csv", out_csv)
+        self.assertEqual(rc, 0)
+        self.assertNotIn("Line item detail.", out)
+        with open(out_csv, encoding="utf-8") as fh:
+            self.assertIn("Line item detail.", fh.read())
+
+
+class TestReimportingOurOwnCsvChangesNothing(unittest.TestCase):
+    """Re-importing an UNMODIFIED `--csv` file recorded phantom corrections.
+
+    Found 2026-09-22: `--batch ... --workspace case/ --csv out.csv` followed by
+    `--workspace case/ --import-csv out.csv`, with out.csv untouched, filed
+    "revision 2: 4 rows, 8 cell(s) changed" -- two per document, `text` and
+    `text_truncated`. Revision 1 was written with the batch's own column list,
+    which has no `text` in it, while `--csv` appends `text` (and write_csv adds
+    `text_truncated` beside it), so the diff saw every text cell appear out of
+    nowhere. The revision log is the audit trail a client is asked to trust;
+    a real correction sitting among eight invented ones is worse than no log.
+    """
+
+    def _corpus(self, count=4):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        for i in range(count):
+            with open(os.path.join(d, f"inv-{1001 + i}.txt"), "w",
+                      encoding="utf-8") as fh:
+                fh.write(f"ACME SUPPLY CO\nInvoice Number: INV-{1001 + i}\n"
+                         f"Total: $1{i}0.00\n" + "Line item detail. " * 40)
+        return d
+
+    def _cli(self, *argv):
+        import contextlib
+        from vanilla_extract.__main__ import main
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = main(list(argv))
+        return rc, out.getvalue(), err.getvalue()
+
+    def _run(self):
+        src = self._corpus()
+        work = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, work, True)
+        ws = os.path.join(work, "case")
+        csv_path = os.path.join(work, "out.csv")
+        rc, _out, _err = self._cli("--batch", src, "--recognize",
+                                   "--workspace", ws, "--csv", csv_path)
+        self.assertEqual(rc, 0)
+        return ws, csv_path
+
+    def test_reimporting_the_unmodified_csv_is_a_no_op(self):
+        ws, csv_path = self._run()
+        rc, out, _err = self._cli("--workspace", ws, "--import-csv", csv_path)
+        self.assertEqual(rc, 0)
+        self.assertIn("no cell changed", out)
+        self.assertNotIn("revision 2", out)
+
+    def test_one_real_edit_is_exactly_one_change(self):
+        import csv as _csv
+        ws, csv_path = self._run()
+        with open(csv_path, newline="", encoding="utf-8") as fh:
+            reader = _csv.DictReader(fh)
+            columns, rows = list(reader.fieldnames), list(reader)
+        rows[1]["total"] = "$999.99"
+        with open(csv_path, "w", newline="", encoding="utf-8") as fh:
+            writer = _csv.DictWriter(fh, fieldnames=columns)
+            writer.writeheader()
+            writer.writerows(rows)
+        rc, out, _err = self._cli("--workspace", ws, "--import-csv", csv_path)
+        self.assertEqual(rc, 0)
+        self.assertIn("revision 2: 4 rows, 1 cell(s) changed", out)
+        self.assertIn("$999.99", out)
+
+    def test_the_workspace_still_verifies_after_the_round_trip(self):
+        ws, csv_path = self._run()
+        self._cli("--workspace", ws, "--import-csv", csv_path)
+        rc, out, err = self._cli("--workspace", ws, "--verify")
+        self.assertEqual((rc, err), (0, ""))
+        self.assertIn("match their recorded hashes", out)
 
 
 if __name__ == "__main__":

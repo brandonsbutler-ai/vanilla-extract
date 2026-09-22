@@ -595,15 +595,43 @@ def _fit_cell(text):
     return text[:CSV_CELL_LIMIT - len(note)] + note, True
 
 
+def csv_header(columns, rows=()):
+    """The column list a CSV of `rows` will actually carry.
+
+    Separate from write_csv because the workspace has to file the SAME table
+    the client is handed. When the two disagreed, re-importing an untouched
+    export recorded a correction per document that nobody had made.
+    """
+    columns = list(columns or (rows[0].keys() if rows else ["file"]))
+    if "text" in columns and "text_truncated" not in columns:
+        columns.insert(columns.index("text") + 1, "text_truncated")
+    return columns
+
+
+def csv_cells(row, columns):
+    """One row as CSV text: every value a string, every cell within the limit.
+
+    The single definition of what a cell CONTAINS. write_csv writes these, and
+    provenance compares these, so "the file changed" can only mean the text
+    changed -- not that two writers spelled the same value differently.
+    """
+    out = {}
+    for k, v in row.items():
+        out[k], cut = _fit_cell(csv_safe(v))
+        if k == "text":
+            out["text_truncated"] = str(cut)
+    if "text_truncated" in columns and "text" not in row:
+        out["text_truncated"] = "False"
+    return out
+
+
 def write_csv(rows, path, columns=None):
     """Write rows to CSV. Returns the number of data rows written.
 
     No cell exceeds CSV_CELL_LIMIT. When a `text` column is written, a
     `text_truncated` column follows it (True/False), so a cut is never silent.
     """
-    columns = list(columns or (rows[0].keys() if rows else ["file"]))
-    if "text" in columns and "text_truncated" not in columns:
-        columns.insert(columns.index("text") + 1, "text_truncated")
+    columns = csv_header(columns, rows)
     if not rows:
         with open(path, "w", newline="", encoding="utf-8") as fh:
             csv.DictWriter(fh, fieldnames=columns).writeheader()
@@ -612,12 +640,5 @@ def write_csv(rows, path, columns=None):
         writer = csv.DictWriter(fh, fieldnames=columns, extrasaction="ignore")
         writer.writeheader()
         for row in rows:
-            out = {}
-            for k, v in row.items():
-                out[k], cut = _fit_cell(csv_safe(v))
-                if k == "text":
-                    out["text_truncated"] = cut
-            if "text_truncated" in columns and "text" not in row:
-                out["text_truncated"] = False
-            writer.writerow(out)
+            writer.writerow(csv_cells(row, columns))
     return len(rows)

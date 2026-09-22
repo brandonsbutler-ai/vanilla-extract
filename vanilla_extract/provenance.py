@@ -33,7 +33,7 @@ import json
 import os
 import shutil
 
-from .batch import csv_safe
+from .batch import csv_cells, csv_header
 
 MANIFEST = "manifest.json"
 # How often a held manifest is written out anyway, so a process killed outright
@@ -255,8 +255,18 @@ class Workspace:
         an empty revision to the record every time.
         """
         manifest = self.load()
+        # Compare and store the rows AS CSV TEXT, through batch's own writer.
+        # This used to store `{k: csv_safe(v)}` against a column list that the
+        # caller had already narrowed, while --csv wrote a wider one: revision
+        # 1 held no `text` column at all, --csv wrote `text` and
+        # `text_truncated`, and re-importing that untouched file was read as
+        # two corrections per document (measured 2026-09-22: 4 documents, "8
+        # cell(s) changed", none of them made by a person). A revision log is
+        # only worth keeping if a row in it means somebody changed something.
+        columns = csv_header(columns, rows)
+        cells = [csv_cells(row, columns) for row in rows]
         previous = self._previous_rows(manifest, key)
-        changes = _diff_rows(previous, rows, columns, key) if previous is not None else []
+        changes = _diff_rows(previous, cells, columns, key) if previous is not None else []
         if skip_if_unchanged and previous is not None and not changes:
             return None
         number = len(manifest["revisions"]) + 1
@@ -266,8 +276,7 @@ class Workspace:
         with open(path, "w", newline="", encoding="utf-8") as fh:
             writer = csv.DictWriter(fh, fieldnames=columns, extrasaction="ignore")
             writer.writeheader()
-            for row in rows:
-                writer.writerow({k: csv_safe(v) for k, v in row.items()})
+            writer.writerows(cells)
 
         entry = {
             "revision": number,

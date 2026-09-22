@@ -106,6 +106,52 @@ def _unwritable(path):
     return None
 
 
+# How many documents a bare --batch lists before it stops listing. The point of
+# a summary is that its size does not track the corpus: 400 documents used to
+# mean 400 full texts on the terminal, and 400 table rows would still be a
+# screenful of scrollback for a run whose real output is a file.
+_SUMMARY_ROWS = 20
+
+
+def _print_batch_summary(results, exceptions, columns):
+    """What a bare `--batch` prints: a short table, then where the data is.
+
+    stdout, not stderr: this is the command's result. The exceptions table is
+    summarised on stderr by the caller, as it always was.
+    """
+    noun = "document" if len(results) == 1 else "documents"
+    print(f"{len(results)} {noun} read"
+          + (f", {len(exceptions)} could not be read" if exceptions else ""))
+    if not results:
+        print("nothing to summarise")
+        return
+    total = sum(int(r.get("characters") or 0) for r in results)
+    print(f"{total:,} characters, {total // len(results):,} per document on average")
+
+    shown = results[:_SUMMARY_ROWS]
+    # `text` is deliberately absent: it is the column that makes this a
+    # document dump rather than a summary.
+    cols = [c for c in columns if c != "text"]
+
+    def cell(row, col):
+        value = "" if row.get(col) is None else str(row[col])
+        if col == "file":
+            value = os.path.basename(value)
+        value = value.replace("\n", " ").replace("\r", " ")
+        return value if len(value) <= 28 else value[:27] + "\u2026"
+    widths = [max(len(c), *(len(cell(r, c)) for r in shown)) for c in cols]
+    print()
+    print("  " + "  ".join(c.ljust(w) for c, w in zip(cols, widths)).rstrip())
+    for row in shown:
+        print("  " + "  ".join(cell(row, c).ljust(w)
+                               for c, w in zip(cols, widths)).rstrip())
+    if len(results) > _SUMMARY_ROWS:
+        print(f"  ... and {len(results) - _SUMMARY_ROWS} more")
+    print()
+    print("--csv PATH writes every row, with the text column; "
+          "--json writes one JSON object per document")
+
+
 def _run_batch(args):
     """--batch: a folder in, a results table and an exceptions table out."""
     try:
@@ -191,19 +237,30 @@ def _run_batch(args):
                   file=sys.stderr)
 
     columns = ["file", "characters"] + auto_labels + [f.name for f in fields]
+    # The delivered table, decided ONCE. --csv writes it, and the workspace
+    # revision below files the same thing, because a client corrects the file
+    # they were given and imports that back. When the two column lists were
+    # worked out independently they disagreed, and the disagreement was filed
+    # as corrections nobody had made (see provenance.add_revision).
+    csv_columns = list(columns)
+    if not args.no_text:
+        csv_columns.append("text")
     if args.report:
         write_report(results, exceptions, args.report, columns=columns)
         print(f"report -> {args.report}", file=sys.stderr)
 
     if args.csv:
-        csv_columns = list(columns)
-        if not args.no_text:
-            csv_columns.append("text")
         write_csv(results, args.csv, csv_columns)
         print(f"{len(results)} documents -> {args.csv}", file=sys.stderr)
-    else:
+    if args.json:
+        # The machine-readable form, now opt-in. It used to be what a bare
+        # --batch printed: one object per document INCLUDING its full text,
+        # to the terminal, which on the 400-document run this tool is built
+        # for is megabytes of a document dump where --help promised a summary.
         for row in results:
             print(json.dumps(row))
+    elif not args.csv:
+        _print_batch_summary(results, exceptions, columns)
 
     if args.exceptions:
         write_csv(exceptions, args.exceptions, ["file", "reason", "detail"])
@@ -216,7 +273,7 @@ def _run_batch(args):
             print(f"  {row['file']}: {row['reason']}", file=sys.stderr)
 
     if ws is not None:
-        entry = ws.add_revision(results, columns, note="as extracted")
+        entry = ws.add_revision(results, csv_columns, note="as extracted")
         print(f"workspace {args.workspace}: {len(results)} originals and "
               f"extractions archived, revision {entry['revision']} written",
               file=sys.stderr)
@@ -241,7 +298,9 @@ def build_parser():
     # existing workspace and have no input files to name.
     parser.add_argument("paths", nargs="*", metavar="FILE")
     parser.add_argument("--json", action="store_true",
-                        help="emit one JSON object per file instead of text")
+                        help="emit one JSON object per file instead of text; "
+                             "with --batch, one per document (full text "
+                             "included) instead of the summary")
     parser.add_argument("--quiet", "-q", action="store_true",
                         help="omit the ===== filename ===== banners")
     parser.add_argument("--version", action="version",
@@ -249,7 +308,8 @@ def build_parser():
     parser.add_argument("--batch", action="store_true",
                         help="walk the given paths and emit a table instead of text")
     parser.add_argument("--csv", metavar="PATH",
-                        help="with --batch: write results here (default: stdout summary)")
+                        help="with --batch: write results here (default: a "
+                             "summary on stdout)")
     parser.add_argument("--exceptions", metavar="PATH",
                         help="with --batch: write the unreadable-files table here")
     parser.add_argument("--field", action="append", default=[], metavar="NAME=REGEX",

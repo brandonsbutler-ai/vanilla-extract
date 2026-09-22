@@ -30,7 +30,7 @@ import zipfile
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
 
-PASS, FAIL = [], []
+PASS, FAIL, SKIP = [], [], []
 
 # Documented end-to-end check counts, filled in by verify_documentation and
 # settled in main() once the real total is known.
@@ -185,6 +185,20 @@ def check(claim, ok, evidence=""):
         for line in str(evidence).splitlines()[:6]:
             print(f"         {line}")
     return ok
+
+
+def skip(claim, why):
+    """A check that could not run here, as opposed to one that failed.
+
+    Only for a fixture this suite cannot BUILD without an optional development
+    tool -- never for a claim the package itself could not honour. A stranger
+    running this from the sdist has no fpdf2, and telling them their download is
+    broken because of that is a lie about the package.
+    """
+    SKIP.append(claim)
+    print(f"  [SKIP] {claim}")
+    print(f"         {why}")
+    return False
 
 
 def section(name):
@@ -385,7 +399,11 @@ def build_corpus(d):
         shutil.copy2(p, mis)
         made["misnamed"] = (mis, pdf_ref)
     except ImportError:
-        print("  (fpdf2 unavailable; PDF generation skipped)")
+        # Not a defect in the package: fpdf2 is how this SUITE manufactures a
+        # real-producer PDF. Without it those two fixtures do not exist, and the
+        # checks that need them are skipped rather than failed.
+        made["_unbuildable"] = {"pdf", "misnamed"}
+        print("  (fpdf2 unavailable; the two PDF fixtures cannot be built here)")
 
     # --- ZIP holding three of the above
     p = os.path.join(d, f"{rid('BDL')}.zip")
@@ -407,7 +425,11 @@ def verify_formats(corpus):
     for fmt in ("pdf", "docx", "pptx", "xlsx", "odt", "rtf", "eml", "mbox",
                 "html", "xml", "csv", "tsv", "json", "txt", "md", "log"):
         if fmt not in corpus:
-            check(f"{fmt}: file present to test", False, "not generated")
+            if fmt in corpus.get("_unbuildable", ()):
+                skip(f"{fmt:5s} extracts and contains its marker",
+                     "needs fpdf2 to build the fixture; install it to run this check")
+            else:
+                check(f"{fmt}: file present to test", False, "not generated")
             continue
         path, needle = corpus[fmt]
         r = cli(path, "--quiet")
@@ -418,6 +440,9 @@ def verify_formats(corpus):
 
 def verify_hard_cases(corpus):
     section("CLAIM: content routing, and the two bugs that made it useless")
+    if "misnamed" in corpus.get("_unbuildable", ()):
+        skip("a PDF named .txt is still read as a PDF",
+             "needs fpdf2 to build the fixture; install it to run this check")
     if "misnamed" in corpus:
         path, needle = corpus["misnamed"]
         r = cli(path, "--quiet")
@@ -616,7 +641,6 @@ def verify_datasheet_ground_truth(workdir):
     section("CLAIM: the datasheet reports the state it was given (round-trip)")
     import csv as _csv
     import datetime
-    import stat as statmod
 
     # tempfile lives on a real Linux filesystem, so mode and times are honoured.
     # (chmod on the NTFS mount this repo sits on would be silently ignored --
@@ -954,6 +978,127 @@ def verify_provenance(corpus, workdir):
           (r.stderr or r.stdout)[:200])
 
 
+# The sentence the TeX-shaped fixture below draws. Every word break in the
+# content stream is a NUMBER, not a space character -- which is how TeX
+# engines (pdfTeX, XeTeX, LuaTeX) write every PDF they produce.
+_TEX_SENTENCE = ("The shared MIME-info database is read "
+                 "without a single space glyph.")
+
+
+def _tex_shaped_pdf(path, sentence=_TEX_SENTENCE):
+    """A PDF written the way pdfTeX writes one: TJ arrays, no space glyphs.
+
+    `-250` between two runs is the interword space in thousandths of an em;
+    `20` inside "MIME-info" is a kern tightening a pair, and must NOT become a
+    space. Both forms are taken from the reproducer this fixture stands in for,
+    /usr/share/doc/shared-mime-info/shared-mime-info-spec.pdf (pdfTeX-1.40.25),
+    which on 2026-09-22 came back as 31,988 characters containing zero spaces.
+    """
+    runs = []
+    for i, word in enumerate(sentence.split(" ")):
+        if i:
+            runs.append(b"-250")
+        # Split one word across a kern, as a TeX ligature or kern pair does.
+        if "-" in word and len(word) > 4:
+            head, _sep, tail = word.partition("-")
+            runs.append(b"(" + head.encode("latin-1") + b"-inf)20(o)")
+            del tail
+        else:
+            runs.append(b"(" + word.encode("latin-1") + b")")
+    stream = (b"BT /F1 10 Tf 72 720 Td [" + b"".join(runs) + b"]TJ ET")
+    with open(path, "wb") as fh:
+        fh.write(b"%PDF-1.4\n1 0 obj\n<< /Length " + str(len(stream)).encode()
+                 + b" >>\nstream\n" + stream + b"\nendstream\nendobj\n%%EOF\n")
+    return path
+
+
+def verify_the_audit_findings(workdir):
+    """The three release blockers a stranger audit found on 2026-09-22.
+
+    Each one had the same shape: the tool produced something that LOOKED like
+    a result. A PDF with every space removed, a summary that was a document
+    dump, and a revision log full of corrections nobody made.
+    """
+    section("CLAIM: the three failures a stranger audit found are fixed "
+            "and stay fixed")
+    d = os.path.join(workdir, "audit")
+    os.makedirs(d, exist_ok=True)
+
+    # --- a PDF that carries no space glyph at all -------------------------
+    tex = _tex_shaped_pdf(os.path.join(d, "tex_shaped.pdf"))
+    r = cli(tex, "--quiet", expect_rc=0)
+    got = r.stdout.strip()
+    check("a TeX-produced PDF, which draws no space glyph, comes back with its "
+          "words separated",
+          got == _TEX_SENTENCE, f"got {got!r}")
+    check("a kern inside a word is not read as a word break",
+          "MIME-info" in got and "MIME-inf o" not in got, got)
+
+    # --- a bare --batch is a summary, not every document's full text ------
+    src = os.path.join(d, "corpus")
+    os.makedirs(src, exist_ok=True)
+    body = "Line item detail. " * 80
+    marker = rid("AUDIT")
+    for i in range(40):
+        with open(os.path.join(src, f"doc_{i:02d}.txt"), "w", encoding="utf-8") as fh:
+            fh.write(f"Invoice Number: {marker}-{i}\nTotal: ${100 + i}.00\n{body}")
+    r = cli("--batch", src, expect_rc=0)
+    check("a bare --batch does not print the documents",
+          body.strip() not in r.stdout,
+          f"{len(r.stdout)} characters on stdout")
+    check("a bare --batch prints the summary its --help promises, and its size "
+          "does not follow the corpus",
+          "40 documents read" in r.stdout and len(r.stdout) < 4000
+          and "--csv" in r.stdout,
+          f"{len(r.stdout)} characters on stdout")
+
+    r = cli("--batch", "--json", src, expect_rc=0)
+    import json as _json
+    records = [_json.loads(line) for line in r.stdout.splitlines() if line.strip()]
+    check("--json is how machine output is asked for (one object per document, "
+          "text included)",
+          len(records) == 40 and body.strip() in records[0]["text"],
+          f"{len(records)} records")
+
+    out_csv = os.path.join(d, "out.csv")
+    r = cli("--batch", src, "--csv", out_csv, expect_rc=0)
+    with open(out_csv, encoding="utf-8") as fh:
+        written = fh.read()
+    check("--csv is how the data is asked for, and it leaves stdout alone",
+          body.strip() in written and r.stdout.strip() == "",
+          f"csv {len(written)} chars, stdout {len(r.stdout)} chars")
+
+    # --- re-importing our own output is a no-op ---------------------------
+    ws = os.path.join(d, "case")
+    round_trip = os.path.join(d, "delivered.csv")
+    cli("--batch", src, "--recognize", "--workspace", ws,
+        "--csv", round_trip, expect_rc=0)
+    r = cli("--workspace", ws, "--import-csv", round_trip, expect_rc=0)
+    check("re-importing the tool's own unmodified CSV records nothing",
+          "no cell changed" in r.stdout and "revision 2" not in r.stdout,
+          r.stdout.strip()[:300])
+
+    import csv as _csv
+    with open(round_trip, newline="", encoding="utf-8") as fh:
+        reader = _csv.DictReader(fh)
+        columns, rows = list(reader.fieldnames), list(reader)
+    corrected = rmoney()
+    rows[3]["total"] = f"${corrected}"
+    with open(round_trip, "w", newline="", encoding="utf-8") as fh:
+        writer = _csv.DictWriter(fh, fieldnames=columns)
+        writer.writeheader()
+        writer.writerows(rows)
+    r = cli("--workspace", ws, "--import-csv", round_trip, expect_rc=0)
+    check(f"one corrected cell is recorded as exactly one change (${corrected})",
+          "1 cell(s) changed" in r.stdout and corrected in r.stdout,
+          r.stdout.strip()[:300])
+
+    problems = cli("--workspace", ws, "--verify", expect_rc=0)
+    check("the workspace still verifies after the round trip",
+          "match their recorded hashes" in problems.stdout,
+          problems.stdout.strip()[:200])
+
+
 def verify_failure_modes(workdir):
     section("CLAIM: it fails loudly -- never an empty string, never mojibake")
     import zlib
@@ -1157,16 +1302,88 @@ def verify_packaging_and_deps(workdir):
           callable(resolved), f"{target} -> {resolved!r}")
 
     declared = set(cfg.get("tool", {}).get("setuptools", {}).get("packages", []))
-    on_disk = {d.replace(os.sep, ".") for d, _sub, files in os.walk(
-        os.path.join(ROOT, "vanilla_extract")) if "__init__.py" in files}
-    on_disk = {os.path.relpath(os.path.join(ROOT, d.replace(".", os.sep)), ROOT)
-               .replace(os.sep, ".") for d in on_disk}
+    # Make the path relative BEFORE turning separators into dots. Doing it the
+    # other way round round-trips through `.` -> os.sep and mangles any directory
+    # whose own name contains a dot -- which is exactly what an unpacked sdist is
+    # called (`vanilla_extract-0.2.0`), so this check failed only outside a
+    # checkout. Measured 2026-09-21.
+    on_disk = {os.path.relpath(d, ROOT).replace(os.sep, ".")
+               for d, _sub, files in os.walk(os.path.join(ROOT, "vanilla_extract"))
+               if "__init__.py" in files}
     check("every package on disk is declared in pyproject",
           declared == on_disk, f"declared {sorted(declared)} vs disk {sorted(on_disk)}")
 
     check("package version agrees with pyproject",
           project_cfg.get("version") == __version__,
           f"{project_cfg.get('version')} vs {__version__}")
+
+    # Every `pip install` and `pipx install` the README shows must name
+    # something a reader can actually get: a path, a URL, or a distribution
+    # this project publishes -- spelled the way an index will hold it, and
+    # carrying only extras this project declares. Nothing checked this before
+    # 2026-09-21. The README's first instruction is an install command, and
+    # `pip install vanilla-extrakt` would have shipped unnoticed, because
+    # every other check in this file reads the import package instead.
+    #
+    # The two names differ on purpose and only one of them is installable. The
+    # distribution is `vanilla-extract` (pyproject [project].name); the import
+    # package is `vanilla_extract`. Comparison is by PEP 503 normalisation, so
+    # a README that writes `vanilla_extract` after `pip install` is not a
+    # failure -- an index folds `-`, `_` and `.` together -- while a
+    # misspelling still is.
+    #
+    # Path installs, git+ URLs and PEP 508 direct references (`name @ url`) do
+    # not resolve against an index, so no name is looked up for them; but the
+    # name in front of the `@` is still ours to spell, and the extras on it are
+    # still ours to declare, so both are checked.
+    #
+    # A bare index install of our own name also requires the README to say
+    # WHICH version that gets you: "install it from PyPI", alone, is a claim
+    # with no content. The README answers it today in the sentence above the
+    # block ("0.2.0 is the release going there").
+    import re as _re2
+    import shlex as _shlex
+    # Distributions other than ours that this README deliberately tells a
+    # reader to install: PyInstaller, to build the standalone binary, and the
+    # Qt runtime, for running the window from source. Measured against
+    # README.md on 2026-09-21 -- those two, and nothing else. Listing them here
+    # is the point: a third one cannot arrive in front of a reader unnoticed.
+    _third_party = {"pyinstaller", "PySide6-Essentials"}
+
+    def _norm(name):           # PEP 503: vanilla_extract == vanilla-extract
+        return _re2.sub(r"[-_.]+", "-", name).strip().lower()
+
+    _readme_text = open(os.path.join(ROOT, "README.md"), encoding="utf-8").read()
+    _dist = _norm(project_cfg["name"])
+    _declared_extras = set(project_cfg.get("optional-dependencies") or {})
+    _known = {_dist} | {_norm(x) for x in _third_party}
+    _bad, _bare_ours = [], False
+    for _args in _re2.findall(r"\bpipx? install\s+([^\n`#]+)", _readme_text):
+        for _tok in _shlex.split(_args):
+            if _tok.startswith("-"):                   # a flag, not a target
+                continue
+            _head = _re2.split(r"[\s@]", _tok, maxsplit=1)[0]   # before ` @ url`
+            _extras = [_e.strip() for _g in _re2.findall(r"\[([^\]]+)\]", _head)
+                       for _e in _g.split(",")]
+            _base = _re2.split(r"[=<>!~;]", _head.split("[")[0])[0].strip()
+            _is_path = (_base in ("", ".", "..") or "://" in _base
+                        or _base.startswith((".", "/", "git+", "\\")))
+            _ours = _is_path                           # a path install is ours
+            if not _is_path:
+                if _norm(_base) not in _known:
+                    _bad.append(f"{_tok}: no distribution of this project is "
+                                f"called {_base!r}")
+                _ours = _norm(_base) == _dist
+                if _ours and "@" not in _tok:
+                    _bare_ours = True
+            if _ours:
+                _bad += [f"{_tok}: [{_e}] is not an extra this project declares"
+                         for _e in _extras if _e not in _declared_extras]
+    if _bare_ours and __version__ not in _readme_text:
+        _bad.append(f"the README installs {_dist} from an index without saying "
+                    f"anywhere which version that gets you ({__version__})")
+    check("every install instruction in the README names something this "
+          "project publishes", not _bad, _bad)
     # Both scripts, as a clone delivers them. The mode lives in git's index, and
     # on a checkout with core.fileMode=false (an NTFS mount) a lost +x bit is
     # invisible locally -- a fresh clone got 0644 and this suite died with a
@@ -1310,6 +1527,12 @@ def verify_documentation(workdir):
     # not, and nothing noticed because nothing looked. Regenerate it here and
     # compare the figures it carries against the ones the docs now state.
     pdf = os.path.join(ROOT, "vanilla_extract_Validation_Report.pdf")
+    if not os.path.isfile(pdf):
+        skip("the validation PDF quotes the same check count as the docs",
+             "the report is not in this copy of the project")
+    elif not shutil.which("pdftotext"):
+        skip("the validation PDF quotes the same check count as the docs",
+             "pdftotext (poppler-utils) is not installed here")
     if os.path.isfile(pdf) and shutil.which("pdftotext"):
         r = subprocess.run(["pdftotext", "-layout", pdf, "-"],
                            capture_output=True, text=True, timeout=120)
@@ -1541,7 +1764,11 @@ def verify_documentation(workdir):
 _README_NOT_RUN = ("pip ", "python3 -m pip ", "python3 packaging/", "./packaging/",
                    "PREFIX=", "iscc ", "python3 -m unittest", "python3 verify_e2e.py",
                    "python3 benchmark.py", "python3 generate_validation_pdf.py",
-                   "git clone ", "cd ", "vanilla-gui", "python3 -m vanilla_extract.gui")
+                   "git clone ", "cd ", "vanilla-gui", "python3 -m vanilla_extract.gui",
+                   # Installing from an index and unpacking a downloaded sdist:
+                   # neither can be done from inside this suite, which has no
+                   # network and no release to fetch.
+                   "pipx ", "tar ")
 
 
 def _readme_shell_commands(readme):
@@ -1740,6 +1967,7 @@ def main():
         verify_error_paths(workdir)
         verify_report(corpus, workdir)
         verify_provenance(corpus, workdir)
+        verify_the_audit_findings(workdir)
         verify_failure_modes(workdir)
         verify_security(workdir)
         verify_packaging_and_deps(workdir)
@@ -1752,7 +1980,9 @@ def main():
     # Counting this check itself: it is one of the checks, so the figure the
     # documentation quotes is the figure this run prints.
     section("CLAIM: the documentation quotes the real number of checks")
-    real_total = len(PASS) + len(FAIL) + len(STATED_CHECK_COUNTS)
+    # Skipped checks are counted: the documentation quotes ONE number, and it has
+    # to be the same number whether or not the optional fixture tools are here.
+    real_total = len(PASS) + len(FAIL) + len(SKIP) + len(STATED_CHECK_COUNTS)
     for name, stated in sorted(STATED_CHECK_COUNTS.items()):
         check(f"{name} quotes the real check count ({real_total})",
               stated == {real_total},
@@ -1761,6 +1991,10 @@ def main():
     section("RESULT")
     total = len(PASS) + len(FAIL)
     print(f"  {len(PASS)}/{total} claims verified")
+    if SKIP:
+        print(f"  {len(SKIP)} skipped (an optional fixture tool is not installed here):")
+        for s in SKIP:
+            print(f"    - {s.strip()}")
     if FAIL:
         print(f"\n  {len(FAIL)} FAILED:")
         for f in FAIL:

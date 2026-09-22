@@ -138,9 +138,9 @@ Three layers, because they catch different things.
 
 | Layer | What it is | What it catches |
 |---|---|---|
-| **Unit tests** (119) | `python3 -m unittest discover -s tests` | Logic errors in one function, and every past bug as a regression test |
+| **Unit tests** (208) | `python3 -m unittest discover -s tests` | Logic errors in one function, and every past bug as a regression test |
 | **Benchmark** | `python3 benchmark.py <dir>` | Extraction *quality*, scored against an independent implementation |
-| **End-to-end verification** (188 checks) | `python3 verify_e2e.py` | Whether the product does what its documentation says |
+| **End-to-end verification** (198 checks) | `python3 verify_e2e.py` | Whether the product does what its documentation says |
 
 The third layer is the unusual one. Unit tests check units; they cannot tell you the README is
 wrong. `verify_e2e.py` generates a fresh corpus in every supported format, drives the real
@@ -317,6 +317,39 @@ that aborted a whole batch; a re-scan that overwrote its own audit trail; an arc
 vanished without appearing in either output table; and a stray line in the test file that made
 running it directly execute 29 of the 64 then in the suite, and exit zero.
 
+### What a stranger found by installing the wheel and following the README (2026-09-22)
+
+Somebody outside the project installed the built wheel into a clean virtual environment, read the
+README, and did what it said. Three things were wrong, and nothing then in either the unit suite
+or the end-to-end verifier could see any of them.
+
+**A whole class of PDF came back with every space removed.** A stock `pdfTeX-1.40.25` document
+extracted to 31,988 characters containing not one space: `SharedMIME-infoDatabase`, exit 0, no
+warning, 0.179 token recall against `pdftotext -layout`. TeX engines draw no space glyph -- a
+word break is a number in the `TJ` array -- and the reader was discarding those numbers. Reading
+them takes the same file to **0.999**, and a Ghostscript document on the same machine from 0.841
+to 0.859.
+
+The benchmark could not have caught it: a producer scan of every PDF in the comparison corpus
+found no TeX file in it at all. A corpus measures the producers that are in it, which is the
+useful half of this finding. The fix was re-scored against `pdftotext` over a separate corpus of
+402 real PDFs before and after, and not one file's output changed by a single character.
+
+**`--batch` without `--csv` printed every document's full text.** `--help` promised "a table
+instead of text" and "default: stdout summary"; what arrived was one JSON object per document,
+text included, on stdout -- megabytes in a terminal for the 400-document case the documentation
+is written around. A bare `--batch` now prints a bounded summary, `--csv` writes the data, and
+`--json` is how machine output is asked for.
+
+**Re-importing the tool's own unmodified CSV recorded corrections nobody had made.** The
+workspace filed revision 1 without the `text` and `text_truncated` columns that `--csv` adds, so
+a byte-for-byte round trip was read as eight changed cells across four documents. A real edit sat
+among them, in the log a client is asked to trust. The revision and the delivered CSV are now
+written by the same code, from the same column list: an untouched round trip files nothing, and
+one corrected cell is one line.
+
+Nine end-to-end checks and eight unit tests now hold all three.
+
 **The end-to-end verifier then caught two more, including one in the documentation:**
 
 - A stated throughput of "50-70 pages per second" was wrong in both directions: the median is
@@ -347,7 +380,7 @@ Every one of those is now a named regression test.
   name for two different fonts on different pages can decode one of them wrong.
 - **Encryption is detected, never bypassed.** This tool will not help you read a document you do
   not have the password for.
-- **188 passing checks means the documented claims hold today, on this machine, for these
+- **198 passing checks means the documented claims hold today, on this machine, for these
   inputs.** It does not mean the tool is free of defects. The review above found 15 after the
   unit tests were green.
 
@@ -359,8 +392,8 @@ Every one of those is now a named regression test.
 git clone https://github.com/brandonsbutler-ai/vanilla-extract
 cd vanilla-extract
 
-python3 -m unittest discover -s tests -v    # 195 unit tests
-python3 verify_e2e.py                       # 188 end-to-end claim checks
+python3 -m unittest discover -s tests -v    # 208 unit tests
+python3 verify_e2e.py                       # 198 end-to-end claim checks
 python3 benchmark.py /path/to/your/pdfs     # quality against pdftotext
 ```
 
